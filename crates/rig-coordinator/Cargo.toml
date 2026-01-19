@@ -1,0 +1,23 @@
+[package]
+name = "rig-coordinator"
+description = "Central coordination server for Rig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rig-core.workspace = true
+rig-transport-tcp.workspace = true
+rig-message-bincode.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

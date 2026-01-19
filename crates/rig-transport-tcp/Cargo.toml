@@ -1,0 +1,21 @@
+[package]
+name = "rig-transport-tcp"
+description = "TCP transport implementation for Rig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rig-core.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

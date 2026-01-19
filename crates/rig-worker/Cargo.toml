@@ -1,0 +1,29 @@
+[package]
+name = "rig-worker"
+description = "Worker node for Rig distributed inference"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rig-core.workspace = true
+rig-runtime-candle.workspace = true
+rig-transport-tcp.workspace = true
+rig-message-bincode.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+uuid.workspace = true
+half = "2.4"
+
+[dev-dependencies]
+rig-coordinator.workspace = true
+rig-transport-tcp.workspace = true
+
+[lints]
+workspace = true

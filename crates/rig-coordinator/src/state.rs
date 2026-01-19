@@ -1,0 +1,937 @@
+use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
+use std::time::Instant;
+
+use rig_core::{
+    Address, Assignment, CoordError, InferenceRequest, ModelId, ModelInfo, Neighbors, NodeId,
+    NodeInfo, NodeStatus, PeerAddress, PipelineConfig, PipelineId, RequestId, StageId, UsageStats,
+};
+use tokio::sync::{RwLock, mpsc, oneshot};
+use tracing::{info, warn};
+
+use crate::config::CoordinatorConfig;
+use crate::inference::GenerationDecision;
+
+#[derive(Debug)]
+pub struct NodeRecord {
+    pub info: NodeInfo,
+    pub last_heartbeat: Instant,
+    pub status: NodeStatus,
+    pub available_models: Vec<ModelInfo>,
+}
+
+impl NodeRecord {
+    fn new(info: NodeInfo, available_models: Vec<ModelInfo>) -> Self {
+        Self {
+            status: info.status.clone(),
+            info,
+            last_heartbeat: Instant::now(),
+            available_models,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipelineStatus {
+    #[default]
+    Creating,
+    Ready,
+    Error,
+}
+
+#[derive(Debug)]
+pub struct StageRecord {
+    pub stage_id: StageId,
+    pub node_id: NodeId,
+    pub layer_range: Range<usize>,
+    pub ready: bool,
+}
+
+#[derive(Debug)]
+pub struct PipelineRecord {
+    pub config: PipelineConfig,
+    pub stages: Vec<StageRecord>,
+    pub status: PipelineStatus,
+}
+
+pub struct StreamingSession {
+    pub token_tx: mpsc::UnboundedSender<String>,
+    pub complete_tx: oneshot::Sender<UsageStats>,
+}
+
+impl std::fmt::Debug for StreamingSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamingSession")
+            .field("token_tx", &"...")
+            .field("complete_tx", &"...")
+            .finish()
+    }
+}
+
+pub struct CoordinatorState {
+    max_nodes: usize,
+    nodes: RwLock<HashMap<NodeId, NodeRecord>>,
+    pipelines: RwLock<HashMap<PipelineId, PipelineRecord>>,
+    assignments: RwLock<HashMap<NodeId, Assignment>>,
+    pending_requests: RwLock<HashMap<PipelineId, VecDeque<InferenceRequest>>>,
+    streaming_sessions: RwLock<HashMap<RequestId, StreamingSession>>,
+    model_registry: RwLock<HashMap<ModelId, (usize, usize)>>,
+    generation_decisions: RwLock<HashMap<RequestId, GenerationDecision>>,
+}
+
+impl std::fmt::Debug for CoordinatorState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoordinatorState")
+            .field("max_nodes", &self.max_nodes)
+            .field("nodes", &"...")
+            .field("pipelines", &"...")
+            .field("assignments", &"...")
+            .field("pending_requests", &"...")
+            .field("streaming_sessions", &"...")
+            .field("model_registry", &"...")
+            .field("generation_decisions", &"...")
+            .finish()
+    }
+}
+
+impl CoordinatorState {
+    #[must_use]
+    pub fn new(config: &CoordinatorConfig) -> Self {
+        Self {
+            max_nodes: config.max_nodes,
+            nodes: RwLock::new(HashMap::new()),
+            pipelines: RwLock::new(HashMap::new()),
+            assignments: RwLock::new(HashMap::new()),
+            pending_requests: RwLock::new(HashMap::new()),
+            streaming_sessions: RwLock::new(HashMap::new()),
+            model_registry: RwLock::new(HashMap::new()),
+            generation_decisions: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub async fn register_node(
+        &self,
+        info: NodeInfo,
+        available_models: Vec<ModelInfo>,
+    ) -> Result<NodeId, CoordError> {
+        let node_id = info.node_id;
+
+        {
+            let mut registry = self.model_registry.write().await;
+
+            for model in &available_models {
+                if let Some(&(existing_layers, existing_hidden)) = registry.get(&model.model_id) {
+                    if model.num_layers != existing_layers {
+                        return Err(CoordError::InvalidRequest(format!(
+                            "Model {} layer count mismatch: node reports {} layers, \
+                             but {} layers already registered",
+                            model.model_id, model.num_layers, existing_layers
+                        )));
+                    }
+                    if model.hidden_dim != existing_hidden {
+                        return Err(CoordError::InvalidRequest(format!(
+                            "Model {} hidden dim mismatch: node reports {}, \
+                             but {} already registered",
+                            model.model_id, model.hidden_dim, existing_hidden
+                        )));
+                    }
+                } else {
+                    registry.insert(model.model_id.clone(), (model.num_layers, model.hidden_dim));
+                    tracing::info!(
+                        model_id = %model.model_id,
+                        num_layers = model.num_layers,
+                        hidden_dim = model.hidden_dim,
+                        "Model registered in global registry"
+                    );
+                }
+            }
+            drop(registry);
+        }
+
+        {
+            let mut nodes = self.nodes.write().await;
+
+            if nodes.len() >= self.max_nodes {
+                return Err(CoordError::MaxNodesReached {
+                    max: self.max_nodes,
+                });
+            }
+
+            let record = NodeRecord::new(info, available_models.clone());
+            nodes.insert(node_id, record);
+        }
+
+        tracing::info!(
+            %node_id,
+            num_models = available_models.len(),
+            "Node registered"
+        );
+        Ok(node_id)
+    }
+
+    pub async fn get_nodes_with_model(&self, model_id: &ModelId) -> Vec<(NodeId, ModelInfo)> {
+        let nodes = self.nodes.read().await;
+
+        nodes
+            .iter()
+            .filter_map(|(node_id, record)| {
+                if !record.status.can_accept_work() {
+                    return None;
+                }
+                record
+                    .available_models
+                    .iter()
+                    .find(|m: &&ModelInfo| &m.model_id == model_id)
+                    .map(|m| (*node_id, m.clone()))
+            })
+            .collect()
+    }
+
+    pub async fn get_model_info(&self, model_id: &ModelId) -> Option<(usize, usize)> {
+        let registry = self.model_registry.read().await;
+        registry.get(model_id).copied()
+    }
+
+    #[must_use]
+    pub fn partition_layers(num_layers: usize, num_nodes: usize) -> Vec<Range<usize>> {
+        if num_nodes == 0 {
+            return Vec::new();
+        }
+
+        let base = num_layers / num_nodes;
+        let remainder = num_layers % num_nodes;
+        let mut ranges = Vec::with_capacity(num_nodes);
+        let mut start = 0;
+
+        for i in 0..num_nodes {
+            let extra = usize::from(i < remainder);
+            let end = start + base + extra;
+            ranges.push(start..end);
+            start = end;
+        }
+
+        ranges
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn heartbeat(&self, node_id: NodeId, status: NodeStatus) -> Result<(), CoordError> {
+        {
+            let mut nodes = self.nodes.write().await;
+
+            let record = nodes
+                .get_mut(&node_id)
+                .ok_or(CoordError::NodeNotFound(node_id))?;
+
+            record.last_heartbeat = Instant::now();
+            record.status = status;
+        }
+
+        tracing::trace!(%node_id, "Heartbeat received");
+        Ok(())
+    }
+
+    pub async fn get_assignment(&self, node_id: NodeId) -> Result<Option<Assignment>, CoordError> {
+        {
+            let nodes = self.nodes.read().await;
+            if !nodes.contains_key(&node_id) {
+                return Err(CoordError::NodeNotFound(node_id));
+            }
+        }
+
+        let assignments = self.assignments.read().await;
+        Ok(assignments.get(&node_id).cloned())
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn create_pipeline(
+        &self,
+        config: PipelineConfig,
+        stage_assignments: Vec<(NodeId, Range<usize>)>,
+        pipeline_id: Option<PipelineId>,
+    ) -> Result<PipelineId, CoordError> {
+        let node_addresses: HashMap<NodeId, Vec<Address>> = {
+            let nodes = self.nodes.read().await;
+            let mut addresses = HashMap::new();
+
+            for (node_id, _) in &stage_assignments {
+                let record = nodes
+                    .get(node_id)
+                    .ok_or(CoordError::NodeNotFound(*node_id))?;
+                addresses.insert(*node_id, record.info.addresses.clone());
+            }
+
+            addresses
+        };
+
+        let pipeline_id = pipeline_id.unwrap_or_default();
+        let num_stages = stage_assignments.len();
+
+        let stages: Vec<StageRecord> = stage_assignments
+            .iter()
+            .enumerate()
+            .map(|(idx, (node_id, layer_range))| {
+                let stage_idx: u32 = idx.try_into().unwrap_or(u32::MAX);
+                StageRecord {
+                    stage_id: StageId::new(stage_idx),
+                    node_id: *node_id,
+                    layer_range: layer_range.clone(),
+                    ready: false,
+                }
+            })
+            .collect();
+
+        {
+            let mut assignments = self.assignments.write().await;
+
+            for (idx, (node_id, layer_range)) in stage_assignments.iter().enumerate() {
+                let prev = if idx > 0 {
+                    let prev_node_id = stage_assignments[idx - 1].0;
+                    Some(PeerAddress::new(
+                        prev_node_id,
+                        node_addresses
+                            .get(&prev_node_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                    ))
+                } else {
+                    None
+                };
+
+                let next = if idx < num_stages - 1 {
+                    let next_node_id = stage_assignments[idx + 1].0;
+                    Some(PeerAddress::new(
+                        next_node_id,
+                        node_addresses
+                            .get(&next_node_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                    ))
+                } else {
+                    None
+                };
+
+                let neighbors = Neighbors { prev, next };
+
+                let stage_idx: u32 = idx.try_into().unwrap_or(u32::MAX);
+                let assignment = Assignment::new(
+                    pipeline_id,
+                    StageId::new(stage_idx),
+                    layer_range.clone(),
+                    neighbors,
+                );
+
+                assignments.insert(*node_id, assignment);
+            }
+        }
+
+        {
+            let mut pipelines = self.pipelines.write().await;
+            pipelines.insert(
+                pipeline_id,
+                PipelineRecord {
+                    config,
+                    stages,
+                    status: PipelineStatus::Creating,
+                },
+            );
+        }
+
+        tracing::info!(%pipeline_id, num_stages, "Pipeline created");
+        Ok(pipeline_id)
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn mark_ready(
+        &self,
+        node_id: NodeId,
+        pipeline_id: PipelineId,
+    ) -> Result<(), CoordError> {
+        {
+            let nodes = self.nodes.read().await;
+            if !nodes.contains_key(&node_id) {
+                return Err(CoordError::NodeNotFound(node_id));
+            }
+        }
+
+        let mut pipelines = self.pipelines.write().await;
+        let pipeline = pipelines
+            .get_mut(&pipeline_id)
+            .ok_or(CoordError::PipelineNotFound(pipeline_id))?;
+
+        for stage in &mut pipeline.stages {
+            if stage.node_id == node_id {
+                stage.ready = true;
+                tracing::info!(%node_id, %pipeline_id, "Node marked ready");
+                break;
+            }
+        }
+
+        if pipeline.stages.iter().all(|s| s.ready) {
+            pipeline.status = PipelineStatus::Ready;
+            tracing::info!(%pipeline_id, "Pipeline ready");
+        }
+
+        Ok(())
+    }
+
+    pub async fn find_dead_nodes(&self, now: Instant, timeout: std::time::Duration) -> Vec<NodeId> {
+        let nodes = self.nodes.read().await;
+
+        nodes
+            .iter()
+            .filter(|(_, record)| {
+                record.status.is_online() && now.duration_since(record.last_heartbeat) > timeout
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    pub async fn mark_unhealthy(&self, node_id: NodeId, reason: &str) {
+        let mut nodes = self.nodes.write().await;
+
+        if let Some(record) = nodes.get_mut(&node_id) {
+            record.status = NodeStatus::Unhealthy {
+                reason: reason.to_string(),
+            };
+            tracing::warn!(%node_id, reason, "Node marked unhealthy");
+        }
+    }
+
+    pub async fn deregister_node(&self, node_id: NodeId) {
+        {
+            let mut nodes = self.nodes.write().await;
+            nodes.remove(&node_id);
+        }
+
+        {
+            let mut assignments = self.assignments.write().await;
+            assignments.remove(&node_id);
+        }
+
+        tracing::info!(%node_id, "Node deregistered");
+    }
+
+    pub async fn is_registered(&self, node_id: NodeId) -> bool {
+        let nodes = self.nodes.read().await;
+        nodes.contains_key(&node_id)
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn is_pipeline_ready(&self, pipeline_id: PipelineId) -> Result<bool, CoordError> {
+        let pipelines = self.pipelines.read().await;
+        let pipeline = pipelines
+            .get(&pipeline_id)
+            .ok_or(CoordError::PipelineNotFound(pipeline_id))?;
+        Ok(pipeline.status == PipelineStatus::Ready)
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn get_pipeline_first_stage(
+        &self,
+        pipeline_id: PipelineId,
+    ) -> Result<NodeId, CoordError> {
+        let pipelines = self.pipelines.read().await;
+        let pipeline = pipelines
+            .get(&pipeline_id)
+            .ok_or(CoordError::PipelineNotFound(pipeline_id))?;
+        pipeline
+            .stages
+            .first()
+            .map(|stage| stage.node_id)
+            .ok_or(CoordError::NoAssignment)
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn get_pipeline_last_stage(
+        &self,
+        pipeline_id: PipelineId,
+    ) -> Result<NodeId, CoordError> {
+        let pipelines = self.pipelines.read().await;
+        let pipeline = pipelines
+            .get(&pipeline_id)
+            .ok_or(CoordError::PipelineNotFound(pipeline_id))?;
+        pipeline
+            .stages
+            .last()
+            .map(|stage| stage.node_id)
+            .ok_or(CoordError::NoAssignment)
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn get_pipeline_status(
+        &self,
+        pipeline_id: PipelineId,
+    ) -> Result<PipelineStatus, CoordError> {
+        let pipelines = self.pipelines.read().await;
+        let pipeline = pipelines
+            .get(&pipeline_id)
+            .ok_or(CoordError::PipelineNotFound(pipeline_id))?;
+        Ok(pipeline.status)
+    }
+
+    pub async fn submit_request(
+        &self,
+        pipeline_id: PipelineId,
+        request: InferenceRequest,
+    ) -> Result<(), CoordError> {
+        if !self.is_pipeline_ready(pipeline_id).await? {
+            return Err(CoordError::InvalidRequest(
+                "Pipeline is not ready".to_string(),
+            ));
+        }
+        let request_id = request.request_id;
+        {
+            let mut pending = self.pending_requests.write().await;
+            pending.entry(pipeline_id).or_default().push_back(request);
+        }
+
+        tracing::info!(%request_id, %pipeline_id, "Request queued for pipeline");
+        Ok(())
+    }
+
+    pub async fn get_pending_request(&self, pipeline_id: PipelineId) -> Option<InferenceRequest> {
+        let mut pending = self.pending_requests.write().await;
+        pending.get_mut(&pipeline_id).and_then(|queue| {
+            let request = queue.pop_front();
+            if let Some(ref req) = request {
+                tracing::debug!(request_id = %req.request_id, "Dequeued request for first stage");
+            }
+            request
+        })
+    }
+
+    pub async fn pending_request_count(&self, pipeline_id: PipelineId) -> usize {
+        let pending = self.pending_requests.read().await;
+        pending.get(&pipeline_id).map_or(0, VecDeque::len)
+    }
+
+    pub async fn start_streaming_session(
+        &self,
+        request_id: RequestId,
+        token_tx: mpsc::UnboundedSender<String>,
+        complete_tx: oneshot::Sender<UsageStats>,
+    ) {
+        let session = StreamingSession {
+            token_tx,
+            complete_tx,
+        };
+        self.streaming_sessions
+            .write()
+            .await
+            .insert(request_id, session);
+        info!(%request_id, "Streaming session started");
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn forward_token(&self, request_id: RequestId, token_text: String) -> bool {
+        let sessions = self.streaming_sessions.read().await;
+        if let Some(session) = sessions.get(&request_id) {
+            if session.token_tx.send(token_text).is_ok() {
+                return true;
+            }
+            warn!(%request_id, "Failed to forward token (receiver dropped)");
+        }
+        false
+    }
+
+    pub async fn complete_streaming_session(
+        &self,
+        request_id: RequestId,
+        usage: UsageStats,
+    ) -> bool {
+        let session = {
+            let mut sessions = self.streaming_sessions.write().await;
+            sessions.remove(&request_id)
+        };
+
+        if let Some(session) = session {
+            drop(session.token_tx);
+            if session.complete_tx.send(usage).is_ok() {
+                info!(%request_id, "Streaming session completed");
+                return true;
+            }
+            warn!(%request_id, "Failed to send streaming completion (receiver dropped)");
+        }
+        false
+    }
+
+    pub async fn store_generation_decision(
+        &self,
+        request_id: RequestId,
+        decision: GenerationDecision,
+    ) {
+        self.generation_decisions
+            .write()
+            .await
+            .insert(request_id, decision);
+        tracing::trace!(%request_id, "Generation decision stored");
+    }
+
+    pub async fn take_generation_decision(
+        &self,
+        request_id: RequestId,
+    ) -> Option<GenerationDecision> {
+        let mut decisions = self.generation_decisions.write().await;
+        decisions.remove(&request_id)
+    }
+
+    pub async fn nodes(&self) -> tokio::sync::RwLockReadGuard<'_, HashMap<NodeId, NodeRecord>> {
+        self.nodes.read().await
+    }
+
+    pub async fn node_count(&self) -> usize {
+        let nodes = self.nodes.read().await;
+        nodes.len()
+    }
+
+    pub async fn pipeline_count(&self) -> usize {
+        let pipelines = self.pipelines.read().await;
+        pipelines.len()
+    }
+
+    pub async fn get_node_info(&self, node_id: NodeId) -> Option<NodeInfo> {
+        let nodes = self.nodes.read().await;
+        nodes.get(&node_id).map(|r| r.info.clone())
+    }
+
+    pub async fn build_cluster_status(&self) -> rig_core::ClusterStatusResponse {
+        let nodes = self.nodes.read().await;
+        let pipelines = self.pipelines.read().await;
+
+        let healthy_nodes = nodes.values().filter(|r| r.status.is_online()).count();
+        let ready_pipelines = pipelines
+            .values()
+            .filter(|p| p.status == PipelineStatus::Ready)
+            .count();
+
+        let node_infos: Vec<rig_core::NodeStatusInfo> = nodes
+            .values()
+            .map(|record| {
+                rig_core::NodeStatusInfo::from_node_info(&record.info, record.status.clone())
+            })
+            .collect();
+
+        let pipeline_infos: Vec<rig_core::PipelineInfoResponse> = pipelines
+            .iter()
+            .map(|(pipeline_id, record)| Self::build_pipeline_info_internal(*pipeline_id, record))
+            .collect();
+
+        rig_core::ClusterStatusResponse {
+            total_nodes: nodes.len(),
+            healthy_nodes,
+            total_pipelines: pipelines.len(),
+            ready_pipelines,
+            nodes: node_infos,
+            pipelines: pipeline_infos,
+        }
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn get_pipeline_info(
+        &self,
+        pipeline_id: PipelineId,
+    ) -> Result<rig_core::PipelineInfoResponse, CoordError> {
+        let pipelines = self.pipelines.read().await;
+        let record = pipelines
+            .get(&pipeline_id)
+            .ok_or(CoordError::PipelineNotFound(pipeline_id))?;
+
+        Ok(Self::build_pipeline_info_internal(pipeline_id, record))
+    }
+
+    pub async fn list_pipelines(&self) -> Vec<rig_core::PipelineInfoResponse> {
+        let pipelines = self.pipelines.read().await;
+        pipelines
+            .iter()
+            .map(|(pipeline_id, record)| Self::build_pipeline_info_internal(*pipeline_id, record))
+            .collect()
+    }
+
+    fn build_pipeline_info_internal(
+        pipeline_id: PipelineId,
+        record: &PipelineRecord,
+    ) -> rig_core::PipelineInfoResponse {
+        let status = match record.status {
+            PipelineStatus::Creating => "creating".to_string(),
+            PipelineStatus::Ready => "ready".to_string(),
+            PipelineStatus::Error => "error".to_string(),
+        };
+
+        let stages: Vec<rig_core::StageInfoResponse> = record
+            .stages
+            .iter()
+            .map(|stage| rig_core::StageInfoResponse {
+                stage_id: stage.stage_id.0,
+                node_id: stage.node_id,
+                layer_start: stage.layer_range.start,
+                layer_end: stage.layer_range.end,
+                ready: stage.ready,
+            })
+            .collect();
+
+        rig_core::PipelineInfoResponse {
+            pipeline_id,
+            model_id: record.config.model_id.clone(),
+            status,
+            stages,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use rig_core::{DType, ModelId, RuntimeCapabilities};
+    use std::net::SocketAddr;
+
+    fn test_config() -> CoordinatorConfig {
+        CoordinatorConfig::default().with_max_nodes(10)
+    }
+
+    fn test_node_info(node_id: NodeId, port: u16) -> NodeInfo {
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        NodeInfo::new(
+            node_id,
+            vec![Address::tcp(addr)],
+            NodeStatus::Healthy,
+            RuntimeCapabilities::new("candle", 0, vec![]),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_register_node() {
+        let state = CoordinatorState::new(&test_config());
+        let node_id = NodeId::new();
+        let info = test_node_info(node_id, 5000);
+
+        let result = state.register_node(info, Vec::new()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.ok(), Some(node_id));
+        assert!(state.is_registered(node_id).await);
+    }
+
+    #[tokio::test]
+    async fn test_max_nodes_reached() {
+        let config = CoordinatorConfig::default().with_max_nodes(2);
+        let state = CoordinatorState::new(&config);
+
+        for i in 0..2 {
+            let node_id = NodeId::new();
+            let info = test_node_info(node_id, 5000 + i);
+            let result = state.register_node(info, Vec::new()).await;
+            assert!(result.is_ok());
+        }
+
+        let node_id = NodeId::new();
+        let info = test_node_info(node_id, 5010);
+        let result = state.register_node(info, Vec::new()).await;
+        assert!(matches!(
+            result,
+            Err(CoordError::MaxNodesReached { max: 2 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat() {
+        let state = CoordinatorState::new(&test_config());
+        let node_id = NodeId::new();
+        let info = test_node_info(node_id, 5000);
+
+        state.register_node(info, Vec::new()).await.ok();
+
+        let result = state.heartbeat(node_id, NodeStatus::Healthy).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_unregistered() {
+        let state = CoordinatorState::new(&test_config());
+        let node_id = NodeId::new();
+
+        let result = state.heartbeat(node_id, NodeStatus::Healthy).await;
+        assert!(matches!(result, Err(CoordError::NodeNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_create_pipeline() {
+        let state = CoordinatorState::new(&test_config());
+
+        let node1 = NodeId::new();
+        let node2 = NodeId::new();
+        state
+            .register_node(test_node_info(node1, 5000), Vec::new())
+            .await
+            .ok();
+        state
+            .register_node(test_node_info(node2, 5001), Vec::new())
+            .await
+            .ok();
+
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+
+        let result = state
+            .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
+            .await;
+        assert!(result.is_ok());
+
+        let assignment1 = state.get_assignment(node1).await.ok().flatten();
+        assert!(assignment1.is_some());
+        let a1 = assignment1.as_ref().unwrap_or_else(|| {
+            panic!("assignment1 should be some");
+        });
+        assert!(a1.neighbors.prev.is_none());
+        assert!(a1.neighbors.next.is_some());
+
+        let assignment2 = state.get_assignment(node2).await.ok().flatten();
+        assert!(assignment2.is_some());
+        let a2 = assignment2.as_ref().unwrap_or_else(|| {
+            panic!("assignment2 should be some");
+        });
+        assert!(a2.neighbors.prev.is_some());
+        assert!(a2.neighbors.next.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_deregister_node() {
+        let state = CoordinatorState::new(&test_config());
+        let node_id = NodeId::new();
+        let info = test_node_info(node_id, 5000);
+
+        state.register_node(info, Vec::new()).await.ok();
+        assert!(state.is_registered(node_id).await);
+
+        state.deregister_node(node_id).await;
+        assert!(!state.is_registered(node_id).await);
+    }
+
+    #[tokio::test]
+    async fn test_find_dead_nodes() {
+        let state = CoordinatorState::new(&test_config());
+        let node_id = NodeId::new();
+        let info = test_node_info(node_id, 5000);
+
+        state.register_node(info, Vec::new()).await.ok();
+
+        let dead = state
+            .find_dead_nodes(Instant::now(), std::time::Duration::from_secs(0))
+            .await;
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0], node_id);
+
+        let dead = state
+            .find_dead_nodes(Instant::now(), std::time::Duration::from_secs(3600))
+            .await;
+        assert!(dead.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_is_pipeline_ready() {
+        let state = CoordinatorState::new(&test_config());
+
+        let node1 = NodeId::new();
+        let node2 = NodeId::new();
+        state
+            .register_node(test_node_info(node1, 5000), Vec::new())
+            .await
+            .ok();
+        state
+            .register_node(test_node_info(node2, 5001), Vec::new())
+            .await
+            .ok();
+
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+        let pipeline_id = state
+            .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
+            .await
+            .expect("pipeline creation should succeed");
+
+        assert!(
+            !state
+                .is_pipeline_ready(pipeline_id)
+                .await
+                .expect("should succeed")
+        );
+
+        state.mark_ready(node1, pipeline_id).await.ok();
+        assert!(
+            !state
+                .is_pipeline_ready(pipeline_id)
+                .await
+                .expect("should succeed")
+        );
+
+        state.mark_ready(node2, pipeline_id).await.ok();
+        assert!(
+            state
+                .is_pipeline_ready(pipeline_id)
+                .await
+                .expect("should succeed")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_is_pipeline_ready_not_found() {
+        let state = CoordinatorState::new(&test_config());
+        let fake_pipeline_id = rig_core::PipelineId::new();
+
+        let result = state.is_pipeline_ready(fake_pipeline_id).await;
+        assert!(matches!(result, Err(CoordError::PipelineNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_get_pipeline_first_stage() {
+        let state = CoordinatorState::new(&test_config());
+
+        let node1 = NodeId::new();
+        let node2 = NodeId::new();
+        state
+            .register_node(test_node_info(node1, 5000), Vec::new())
+            .await
+            .ok();
+        state
+            .register_node(test_node_info(node2, 5001), Vec::new())
+            .await
+            .ok();
+
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+        let pipeline_id = state
+            .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
+            .await
+            .expect("pipeline creation should succeed");
+
+        let first_stage = state
+            .get_pipeline_first_stage(pipeline_id)
+            .await
+            .expect("should succeed");
+        assert_eq!(first_stage, node1);
+    }
+
+    #[tokio::test]
+    async fn test_get_pipeline_last_stage() {
+        let state = CoordinatorState::new(&test_config());
+
+        let node1 = NodeId::new();
+        let node2 = NodeId::new();
+        state
+            .register_node(test_node_info(node1, 5000), Vec::new())
+            .await
+            .ok();
+        state
+            .register_node(test_node_info(node2, 5001), Vec::new())
+            .await
+            .ok();
+
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+        let pipeline_id = state
+            .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
+            .await
+            .expect("pipeline creation should succeed");
+
+        let last_stage = state
+            .get_pipeline_last_stage(pipeline_id)
+            .await
+            .expect("should succeed");
+        assert_eq!(last_stage, node2);
+    }
+}

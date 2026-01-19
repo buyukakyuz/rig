@@ -1,0 +1,20 @@
+[package]
+name = "rig-message-bincode"
+description = "Bincode message codec for Rig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rig-core.workspace = true
+bincode.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+
+[lints]
+workspace = true
