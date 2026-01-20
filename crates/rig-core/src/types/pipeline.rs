@@ -287,14 +287,9 @@ mod tests {
 
     #[test]
     fn model_spec_accessors() {
-        let spec = ModelSpec::new(
-            ModelId::new("llama-7b", "q4_K_M"),
-            "/models/llama.gguf",
-            32,
-            4096,
-        );
+        let spec = ModelSpec::new(ModelId::new("llama-7b", "v1"), "/models/llama-7b", 32, 4096);
         assert_eq!(spec.name(), "llama-7b");
-        assert_eq!(spec.version(), "q4_K_M");
+        assert_eq!(spec.version(), "v1");
         assert_eq!(spec.num_layers, 32);
     }
 

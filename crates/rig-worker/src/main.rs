@@ -15,15 +15,16 @@ fn parse_config() -> Result<(WorkerConfig, ModelId, usize, usize)> {
     let listen_addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:0".to_string());
     let listen_socket: SocketAddr = listen_addr.parse()?;
 
-    let model_name = std::env::var("MODEL_NAME").unwrap_or_else(|_| "tinyllama".to_string());
-    let model_version = std::env::var("MODEL_VERSION").unwrap_or_else(|_| "1.1B".to_string());
-    let model_path =
-        std::env::var("MODEL_PATH").unwrap_or_else(|_| "models/tinyllama.gguf".to_string());
+    let model_name = std::env::var("MODEL_NAME")
+        .map_err(|_| anyhow::anyhow!("MODEL_NAME environment variable is required"))?;
+    let model_version = std::env::var("MODEL_VERSION").unwrap_or_else(|_| "v1".to_string());
+    let model_path = std::env::var("MODEL_PATH")
+        .map_err(|_| anyhow::anyhow!("MODEL_PATH environment variable is required"))?;
     let num_layers: usize = std::env::var("NUM_LAYERS")
-        .unwrap_or_else(|_| "22".to_string())
+        .map_err(|_| anyhow::anyhow!("NUM_LAYERS environment variable is required"))?
         .parse()?;
     let hidden_dim: usize = std::env::var("HIDDEN_DIM")
-        .unwrap_or_else(|_| "2048".to_string())
+        .map_err(|_| anyhow::anyhow!("HIDDEN_DIM environment variable is required"))?
         .parse()?;
 
     let model_id = ModelId::new(&model_name, &model_version);

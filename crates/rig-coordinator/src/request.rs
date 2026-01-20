@@ -76,7 +76,7 @@ mod tests {
         state.register_node(node_info, Vec::new()).await.ok();
 
         let pipeline_config =
-            PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 1, DType::F16);
+            PipelineConfig::new(ModelId::new("test", "v1"), "/models/test", 1, DType::F16);
         let pipeline_id = state
             .create_pipeline(pipeline_config, vec![(node_id, 0..10)], None)
             .await
@@ -103,7 +103,7 @@ mod tests {
         state.register_node(node_info, Vec::new()).await.ok();
 
         let pipeline_config =
-            PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 1, DType::F16);
+            PipelineConfig::new(ModelId::new("test", "v1"), "/models/test", 1, DType::F16);
         let pipeline_id = state
             .create_pipeline(pipeline_config, vec![(node_id, 0..10)], None)
             .await

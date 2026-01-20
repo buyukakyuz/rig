@@ -138,14 +138,14 @@ mod tests {
         let config = WorkerConfig::new(coord_addr.clone())
             .with_listen_addr(listen_addr)
             .with_heartbeat_interval(Duration::from_secs(5))
-            .with_model_path(ModelId::new("llama-7b", "q4"), "/models/llama-7b-q4.gguf");
+            .with_model_path(ModelId::new("llama-7b", "v1"), "/models/llama-7b");
 
         assert_eq!(config.coordinator_addr, coord_addr);
         assert_eq!(config.listen_addr, listen_addr);
         assert_eq!(config.heartbeat_interval, Duration::from_secs(5));
         assert!(
             config
-                .get_model_path(&ModelId::new("llama-7b", "q4"))
+                .get_model_path(&ModelId::new("llama-7b", "v1"))
                 .is_some()
         );
     }
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn model_path_lookup() {
         let model_id = ModelId::new("test-model", "v1");
-        let path = PathBuf::from("/models/test.gguf");
+        let path = PathBuf::from("/models/test-model");
 
         let config = WorkerConfig::default().with_model_path(model_id.clone(), path.clone());
 

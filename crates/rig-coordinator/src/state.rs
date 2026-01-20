@@ -768,7 +768,7 @@ mod tests {
             .await
             .ok();
 
-        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/models/test", 2, DType::F16);
 
         let result = state
             .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
@@ -840,7 +840,7 @@ mod tests {
             .await
             .ok();
 
-        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/models/test", 2, DType::F16);
         let pipeline_id = state
             .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
             .await
@@ -894,7 +894,7 @@ mod tests {
             .await
             .ok();
 
-        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/models/test", 2, DType::F16);
         let pipeline_id = state
             .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
             .await
@@ -922,7 +922,7 @@ mod tests {
             .await
             .ok();
 
-        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/model.gguf", 2, DType::F16);
+        let config = PipelineConfig::new(ModelId::new("test", "v1"), "/models/test", 2, DType::F16);
         let pipeline_id = state
             .create_pipeline(config, vec![(node1, 0..10), (node2, 10..20)], None)
             .await

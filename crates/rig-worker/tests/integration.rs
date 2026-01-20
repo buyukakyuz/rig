@@ -180,7 +180,7 @@ async fn test_worker_get_assignment_with_pipeline() {
     client.register(info).await.expect("Registration failed");
 
     let model_id = ModelId::new("test-model", "v1");
-    let config = PipelineConfig::new(model_id, "/model.gguf", 20, DType::F16);
+    let config = PipelineConfig::new(model_id, "/models/test", 20, DType::F16);
     let _pipeline_id = coordinator
         .state()
         .create_pipeline(config, vec![(node_id, 0..20)], None)
@@ -219,7 +219,7 @@ async fn test_worker_report_ready() {
     client.register(info).await.expect("Registration failed");
 
     let model_id = ModelId::new("test-model", "v1");
-    let config = PipelineConfig::new(model_id, "/model.gguf", 20, DType::F16);
+    let config = PipelineConfig::new(model_id, "/models/test", 20, DType::F16);
     let pipeline_id = coordinator
         .state()
         .create_pipeline(config, vec![(node_id, 0..20)], None)
