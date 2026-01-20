@@ -251,7 +251,6 @@ mod tests {
 
     #[test]
     fn test_tokenizer_config_add_bos_false() {
-        // Qwen models have add_bos_token: false
         let json = r#"{"add_bos_token": false, "add_prefix_space": false}"#;
         let config = TokenizerConfig::from_json(json).unwrap_or_else(|e| {
             panic!("Failed to parse tokenizer config: {e}");
@@ -261,8 +260,7 @@ mod tests {
 
     #[test]
     fn test_tokenizer_config_default() {
-        // When add_bos_token is not present, default to true for backward compat
-        let json = r#"{}"#;
+        let json = r"{}";
         let config = TokenizerConfig::from_json(json).unwrap_or_else(|e| {
             panic!("Failed to parse tokenizer config: {e}");
         });

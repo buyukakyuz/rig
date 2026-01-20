@@ -1,16 +1,15 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write as IoWrite};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args;
 use rig_coordinator::{CoordinatorConfig, CoordinatorServer, HeartbeatMonitor};
 use rig_core::types::protocol::CliCreatePipelineAutoRequest;
 use rig_core::{Address, GenerationParams, InferenceInput, ModelId, PipelineId};
-use rig_runtime_candle::TransformerConfig;
 use rig_worker::{CandleConfig, RuntimeConfig, WorkerConfig, WorkerNode};
 use tokio::sync::broadcast;
 
@@ -59,40 +58,20 @@ pub struct DemoArgs {
     pub no_chat: bool,
 }
 
-struct ModelConfig {
-    name: String,
-    path: PathBuf,
-    num_layers: usize,
-    hidden_dim: usize,
-}
-
-impl ModelConfig {
-    fn load(path: PathBuf) -> Result<Self> {
-        let config_path = path.join("config.json");
-        if !config_path.exists() {
-            anyhow::bail!(
-                "Model config not found: {}\nEnsure the path points to a directory containing config.json",
-                config_path.display()
-            );
-        }
-
-        let config = TransformerConfig::from_file(&config_path).with_context(|| {
-            format!("Failed to load model config from {}", config_path.display())
-        })?;
-
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("model")
-            .to_string();
-
-        Ok(Self {
-            name,
-            path,
-            num_layers: config.num_hidden_layers,
-            hidden_dim: config.hidden_size,
-        })
+fn get_model_name(path: &Path) -> Result<String> {
+    let config_path = path.join("config.json");
+    if !config_path.exists() {
+        anyhow::bail!(
+            "Model config not found: {}\nEnsure the path points to a directory containing config.json",
+            config_path.display()
+        );
     }
+
+    Ok(path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("model")
+        .to_string())
 }
 
 struct DemoCluster {
@@ -102,7 +81,7 @@ struct DemoCluster {
 }
 
 impl DemoCluster {
-    async fn start(model: &ModelConfig, args: &DemoArgs) -> Result<Self> {
+    async fn start(model_name: &str, model_path: &Path, args: &DemoArgs) -> Result<Self> {
         let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
         let coordinator_addr: SocketAddr =
@@ -142,9 +121,9 @@ impl DemoCluster {
         tokio::time::sleep(Duration::from_millis(200)).await;
         println!("  Coordinator: {coordinator_addr}");
 
-        let model_id = ModelId::new(&model.name, "v1");
+        let model_id = ModelId::new(model_name, "v1");
         let mut model_paths = HashMap::new();
-        model_paths.insert(model_id.clone(), model.path.clone());
+        model_paths.insert(model_id.clone(), model_path.to_path_buf());
 
         for i in 0..args.workers {
             #[allow(clippy::cast_possible_truncation)]
@@ -163,14 +142,12 @@ impl DemoCluster {
             let mut worker = WorkerNode::new(worker_config);
             let worker_shutdown_rx = shutdown_tx.subscribe();
             let worker_model_id = model_id.clone();
-            let num_layers = model.num_layers;
-            let hidden_dim = model.hidden_dim;
             let worker_num = i + 1;
 
             tokio::spawn(async move {
                 let mut shutdown_rx = worker_shutdown_rx;
                 tokio::select! {
-                    result = worker.run(worker_model_id, num_layers, hidden_dim) => {
+                    result = worker.run(worker_model_id) => {
                         if let Err(e) = result {
                             tracing::error!(error = %e, "Worker {worker_num} error");
                         }
@@ -365,22 +342,22 @@ async fn run_interactive_chat(
 }
 
 pub async fn run_demo(args: DemoArgs) -> Result<()> {
-    let model = ModelConfig::load(args.model.clone())?;
+    let model_name = get_model_name(&args.model)?;
 
     println!();
     println!("Starting Rig Demo");
     println!("=================");
-    println!("Model: {} ({})", model.name, model.path.display());
+    println!("Model: {} ({})", model_name, args.model.display());
     println!("Workers: {}", args.workers);
     println!("Device: {}", args.device);
     println!();
 
     println!("Starting coordinator and workers...");
-    let mut cluster = DemoCluster::start(&model, &args).await?;
+    let mut cluster = DemoCluster::start(&model_name, &args.model, &args).await?;
 
     print!("Creating pipeline... ");
     io::stdout().flush()?;
-    cluster.create_pipeline(&model.name, args.workers).await?;
+    cluster.create_pipeline(&model_name, args.workers).await?;
     println!("done");
 
     let pipeline_id = cluster

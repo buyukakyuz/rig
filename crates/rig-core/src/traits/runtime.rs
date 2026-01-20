@@ -1,13 +1,22 @@
+use std::path::Path;
+
 use crate::error::{PartitionError, RuntimeError};
 use crate::traits::cache::KvCache;
 use crate::traits::tokenizer::Tokenizer;
 use crate::types::{
-    Activation, MemoryUsage, ModelSpec, PartitionSpec, RequestId, RuntimeCapabilities, RuntimeId,
+    Activation, MemoryUsage, ModelId, ModelSpec, PartitionSpec, RequestId, RuntimeCapabilities,
+    RuntimeId,
 };
 
 pub trait Runtime: Send + Sync {
     fn id(&self) -> RuntimeId;
     fn capabilities(&self) -> RuntimeCapabilities;
+
+    /// Discover model metadata from files without loading weights.
+    /// Returns a fully populated ModelSpec with num_layers, hidden_dim, etc.
+    /// Each runtime implementation reads its own config format (HuggingFace config.json, GGUF, etc.)
+    fn discover_model(&self, model_id: ModelId, path: &Path) -> Result<ModelSpec, RuntimeError>;
+
     fn load_partition(
         &self,
         model: &ModelSpec,

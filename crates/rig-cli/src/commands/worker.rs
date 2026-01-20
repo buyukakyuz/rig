@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rig_core::{Address, ModelId};
-use rig_runtime_candle::TransformerConfig;
 use rig_worker::{CandleConfig, RuntimeConfig, WorkerConfig, WorkerNode};
 use tokio::signal;
 
@@ -103,22 +102,14 @@ pub async fn run_worker(args: WorkerArgs) -> Result<()> {
 
     let mut node = WorkerNode::new(config);
 
-    let (model_id, model_path) = model_paths
+    let (model_id, _model_path) = model_paths
         .iter()
         .next()
         .context("No model paths configured. At least one model must be available.")?;
     let model_id = model_id.clone();
-    let model_path = model_path.clone();
-
-    let config_path = model_path.join("config.json");
-    let model_config = TransformerConfig::from_file(&config_path)
-        .with_context(|| format!("Failed to load model config from {}", config_path.display()))?;
-
-    let num_layers = model_config.num_hidden_layers;
-    let hidden_dim = model_config.hidden_size;
 
     let result = tokio::select! {
-        result = node.run(model_id, num_layers, hidden_dim) => result,
+        result = node.run(model_id) => result,
         _ = signal::ctrl_c() => {
             tracing::info!("Received shutdown signal");
             node.shutdown();

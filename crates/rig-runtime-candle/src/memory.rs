@@ -43,6 +43,7 @@ fn query_metal_memory() -> (u64, u64) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

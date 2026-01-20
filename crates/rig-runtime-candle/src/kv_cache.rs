@@ -100,6 +100,7 @@ impl KvCache for CandleKvCache {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -110,19 +111,19 @@ mod tests {
         let req1 = RequestId::new();
         let req2 = RequestId::new();
 
-        cache.allocate(req1.clone(), 2048).unwrap();
-        cache.allocate(req2.clone(), 1024).unwrap();
+        cache.allocate(req1, 2048).unwrap();
+        cache.allocate(req2, 1024).unwrap();
 
         assert_eq!(cache.active_slots(), 2);
 
-        assert!(cache.get(req1.clone()).is_some());
-        assert!(cache.get(req2.clone()).is_some());
+        assert!(cache.get(req1).is_some());
+        assert!(cache.get(req2).is_some());
 
-        cache.release(req1.clone()).unwrap();
+        cache.release(req1).unwrap();
         assert_eq!(cache.active_slots(), 1);
         assert!(cache.get(req1).is_none());
 
-        cache.release(req2.clone()).unwrap();
+        cache.release(req2).unwrap();
         assert_eq!(cache.active_slots(), 0);
     }
 
@@ -145,9 +146,9 @@ mod tests {
         let mut cache = CandleKvCache::new(32, 4, 16384);
 
         let req = RequestId::new();
-        cache.allocate(req.clone(), 1024).unwrap();
+        cache.allocate(req, 1024).unwrap();
 
-        let result = cache.allocate(req.clone(), 2048);
+        let result = cache.allocate(req, 2048);
         assert!(matches!(result, Err(CacheError::AlreadyAllocated(_))));
     }
 
@@ -167,7 +168,7 @@ mod tests {
         assert_eq!(cache.memory_usage().cache_bytes, 0);
 
         let req = RequestId::new();
-        cache.allocate(req.clone(), 2048).unwrap();
+        cache.allocate(req, 2048).unwrap();
 
         assert_eq!(cache.memory_usage().cache_bytes, 0);
 
@@ -182,9 +183,9 @@ mod tests {
         let mut cache = CandleKvCache::new(32, 4, 16384);
 
         let req = RequestId::new();
-        cache.allocate(req.clone(), 4096).unwrap();
+        cache.allocate(req, 4096).unwrap();
 
-        let slot = cache.get(req.clone()).unwrap();
+        let slot = cache.get(req).unwrap();
         assert_eq!(slot.seq_len, 0);
         assert_eq!(slot.max_seq_len, 4096);
         assert!(slot.has_capacity(4096));

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rig_core::{
@@ -24,6 +25,12 @@ impl RuntimeWrapper {
     fn capabilities(&self) -> RuntimeCapabilities {
         match self {
             Self::Candle(rt) => rt.capabilities(),
+        }
+    }
+
+    fn discover_model(&self, model_id: ModelId, path: &Path) -> Result<ModelSpec, RuntimeError> {
+        match self {
+            Self::Candle(rt) => rt.discover_model(model_id, path),
         }
     }
 
@@ -206,7 +213,7 @@ impl WorkerNode {
         }
     }
 
-    #[instrument(skip(self), fields(
+    #[instrument(skip(self, model_spec), fields(
         pipeline_id = %assignment.pipeline_id,
         stage_id = %assignment.stage_id,
         layer_range = ?assignment.layer_range
@@ -214,37 +221,23 @@ impl WorkerNode {
     pub async fn load_partition(
         &self,
         assignment: &Assignment,
-        model_id: &ModelId,
-        num_layers: usize,
-        hidden_dim: usize,
+        model_spec: &ModelSpec,
     ) -> Result<Box<dyn rig_core::Partition>, WorkerError> {
         let runtime = self
             .runtime
             .as_ref()
             .ok_or_else(|| WorkerError::config("Runtime not initialized"))?;
 
-        let model_path = self
-            .config
-            .get_model_path(model_id)
-            .ok_or_else(|| WorkerError::ModelNotFound(model_id.to_string()))?;
-
-        if !model_path.exists() {
-            return Err(WorkerError::ModelPathNotFound(model_path.clone()));
-        }
-
-        let model_spec =
-            ModelSpec::with_path(model_id.clone(), model_path.clone(), num_layers, hidden_dim);
-
         let partition_spec =
             PartitionSpec::new(assignment.layer_range.clone(), rig_core::DType::F16);
 
         info!(
-            model = %model_id,
-            path = %model_path.display(),
+            model = %model_spec.model_id,
+            path = %model_spec.path.display(),
             "Loading partition"
         );
 
-        let partition = runtime.load_partition(&model_spec, &partition_spec).await?;
+        let partition = runtime.load_partition(model_spec, &partition_spec).await?;
 
         info!("Partition loaded successfully");
         Ok(partition)
@@ -314,23 +307,37 @@ impl WorkerNode {
     }
 
     #[instrument(skip(self))]
-    pub async fn run(
-        &mut self,
-        model_id: ModelId,
-        num_layers: usize,
-        hidden_dim: usize,
-    ) -> Result<(), WorkerError> {
+    pub async fn run(&mut self, model_id: ModelId) -> Result<(), WorkerError> {
         self.init_runtime()?;
+
+        // Discover model metadata from files (runtime knows how to parse its format)
+        let model_path = self
+            .config
+            .get_model_path(&model_id)
+            .ok_or_else(|| WorkerError::ModelNotFound(model_id.to_string()))?;
+
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| WorkerError::config("Runtime not initialized"))?;
+
+        let model_spec = runtime.discover_model(model_id, model_path)?;
+        info!(
+            num_layers = model_spec.num_layers,
+            hidden_dim = model_spec.hidden_dim,
+            "Discovered model metadata"
+        );
 
         self.start_peer_listener().await?;
 
         self.connect_to_coordinator().await?;
 
-        let model_path = self
-            .config
-            .get_model_path(&model_id)
-            .ok_or_else(|| WorkerError::ModelNotFound(model_id.to_string()))?;
-        let model_info = ModelInfo::new(model_id.clone(), model_path, num_layers, hidden_dim);
+        let model_info = ModelInfo::new(
+            model_spec.model_id.clone(),
+            model_spec.path.clone(),
+            model_spec.num_layers,
+            model_spec.hidden_dim,
+        );
         self.set_model_info(model_info);
 
         self.register().await?;
@@ -339,9 +346,7 @@ impl WorkerNode {
 
         let assignment = self.wait_for_assignment().await?;
 
-        let partition = self
-            .load_partition(&assignment, &model_id, num_layers, hidden_dim)
-            .await?;
+        let partition = self.load_partition(&assignment, &model_spec).await?;
 
         let (prev_peer, next_peer) = self.establish_peer_connections(&assignment).await?;
 

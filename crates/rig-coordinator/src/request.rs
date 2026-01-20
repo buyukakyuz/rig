@@ -113,7 +113,7 @@ mod tests {
 
         let request = test_request(ModelId::new("test", "v1"));
         let request_id = request.request_id;
-        let _rx = handler.submit_request(pipeline_id, request).await.unwrap();
+        handler.submit_request(pipeline_id, request).await.unwrap();
 
         assert_eq!(handler.pending_count(pipeline_id).await, 1);
 

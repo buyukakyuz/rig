@@ -1,8 +1,10 @@
 use candle_core::Device;
 
+use std::path::Path;
+
 use rig_core::Partition;
 use rig_core::error::RuntimeError;
-use rig_core::types::{DType, ModelSpec, PartitionSpec, RuntimeCapabilities, RuntimeId};
+use rig_core::types::{DType, ModelId, ModelSpec, PartitionSpec, RuntimeCapabilities, RuntimeId};
 
 use crate::config::TransformerConfig;
 use crate::error::CandleError;
@@ -102,6 +104,22 @@ impl rig_core::Runtime for CandleRuntime {
 
     fn capabilities(&self) -> RuntimeCapabilities {
         self.capabilities.clone()
+    }
+
+    fn discover_model(&self, model_id: ModelId, path: &Path) -> Result<ModelSpec, RuntimeError> {
+        let config = self
+            .load_config(path)
+            .map_err(|e| RuntimeError::LoadFailed {
+                model: path.display().to_string(),
+                reason: e.to_string(),
+            })?;
+
+        Ok(ModelSpec::new(
+            model_id,
+            path,
+            config.num_hidden_layers,
+            config.hidden_size,
+        ))
     }
 
     fn load_partition(
