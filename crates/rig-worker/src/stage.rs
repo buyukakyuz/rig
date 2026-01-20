@@ -97,13 +97,7 @@ impl PipelineStage {
 
     #[instrument(skip(self, activation))]
     pub async fn send_activation(&self, activation: &Activation) -> Result<(), WorkerError> {
-        debug!(
-            has_next_peer = self.next_peer.is_some(),
-            is_last_stage = self.is_last_stage(),
-            "send_activation called"
-        );
         if let Some(peer) = &self.next_peer {
-            debug!("Sending activation to next peer");
             peer.send_activation(activation).await
         } else {
             Err(WorkerError::peer_connection(

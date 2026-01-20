@@ -16,14 +16,18 @@ pub struct TransformerBlock {
 }
 
 impl TransformerBlock {
-    pub fn load(vb: VarBuilder, config: &TransformerConfig) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &TransformerConfig,
+        use_attention_bias: bool,
+    ) -> Result<Self> {
         let input_layernorm = rms_norm(
             config.hidden_size,
             config.rms_norm_eps,
             vb.pp("input_layernorm"),
         )?;
 
-        let self_attn = CausalSelfAttention::load(vb.pp("self_attn"), config)?;
+        let self_attn = CausalSelfAttention::load(vb.pp("self_attn"), config, use_attention_bias)?;
 
         let post_attention_layernorm = rms_norm(
             config.hidden_size,
@@ -102,7 +106,7 @@ mod tests {
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
 
-        let block = TransformerBlock::load(vb.pp("block"), &config)
+        let block = TransformerBlock::load(vb.pp("block"), &config, false)
             .unwrap_or_else(|e| panic!("Failed to load block: {e}"));
 
         let input = Tensor::randn(0f32, 1f32, (2, 8, 64), &device)

@@ -46,7 +46,6 @@ impl PeerConnection {
             .send_frame(&frame)
             .await
             .map_err(WorkerError::Transport)?;
-        debug!(size_bytes = frame.len(), "Sent activation");
         Ok(())
     }
 
@@ -58,11 +57,6 @@ impl PeerConnection {
             .await
             .map_err(WorkerError::Transport)?;
         let activation = deserialize_activation(&frame)?;
-        debug!(
-            request_id = %activation.metadata.request_id,
-            size_bytes = frame.len(),
-            "Received activation"
-        );
         Ok(activation)
     }
 }

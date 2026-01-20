@@ -7,7 +7,7 @@ use rig_core::{
     NodeInfo, NodeStatus, PeerAddress, PipelineConfig, PipelineId, RequestId, StageId, UsageStats,
 };
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::config::CoordinatorConfig;
 use crate::inference::GenerationDecision;
@@ -485,7 +485,7 @@ impl CoordinatorState {
             pending.entry(pipeline_id).or_default().push_back(request);
         }
 
-        tracing::info!(%request_id, %pipeline_id, "Request queued for pipeline");
+        tracing::debug!(%request_id, %pipeline_id, "Request queued for pipeline");
         Ok(())
     }
 
@@ -519,7 +519,7 @@ impl CoordinatorState {
             .write()
             .await
             .insert(request_id, session);
-        info!(%request_id, "Streaming session started");
+        tracing::debug!(%request_id, "Streaming session started");
     }
 
     #[allow(clippy::significant_drop_tightening)]
@@ -547,7 +547,7 @@ impl CoordinatorState {
         if let Some(session) = session {
             drop(session.token_tx);
             if session.complete_tx.send(usage).is_ok() {
-                info!(%request_id, "Streaming session completed");
+                tracing::debug!(%request_id, "Streaming session completed");
                 return true;
             }
             warn!(%request_id, "Failed to send streaming completion (receiver dropped)");

@@ -7,7 +7,7 @@ use rig_core::{
     RequestId, Sampler, StopChecker, StopReason, UsageStats,
 };
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::state::CoordinatorState;
 
@@ -138,8 +138,6 @@ impl InferenceEngine {
         );
 
         generations.insert(request_id, state);
-        info!(%request_id, %pipeline_id, "Generation started");
-
         Ok(())
     }
 
@@ -174,7 +172,7 @@ impl InferenceEngine {
         );
 
         if stop_reason.is_stopped() {
-            info!(
+            debug!(
                 %request_id,
                 tokens_generated,
                 reason = %stop_reason,
@@ -213,7 +211,7 @@ impl InferenceEngine {
 
         let usage = state.usage_stats();
 
-        info!(
+        debug!(
             %request_id,
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,

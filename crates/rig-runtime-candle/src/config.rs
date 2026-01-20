@@ -122,6 +122,28 @@ impl TransformerConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct TokenizerConfig {
+    #[serde(default = "default_add_bos_token")]
+    pub add_bos_token: bool,
+}
+
+fn default_add_bos_token() -> bool {
+    true
+}
+
+impl TokenizerConfig {
+    pub fn from_file(path: impl AsRef<Path>) -> ConfigResult<Self> {
+        let content = std::fs::read_to_string(path.as_ref())?;
+        Self::from_json(&content)
+    }
+
+    pub fn from_json(json: &str) -> ConfigResult<Self> {
+        let config: Self = serde_json::from_str(json)?;
+        Ok(config)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
@@ -216,5 +238,34 @@ mod tests {
         assert!(eos.contains(128_009));
         assert!(!eos.contains(2));
         assert_eq!(eos.to_vec(), vec![128_001, 128_008, 128_009]);
+    }
+
+    #[test]
+    fn test_tokenizer_config_add_bos_true() {
+        let json = r#"{"add_bos_token": true}"#;
+        let config = TokenizerConfig::from_json(json).unwrap_or_else(|e| {
+            panic!("Failed to parse tokenizer config: {e}");
+        });
+        assert!(config.add_bos_token);
+    }
+
+    #[test]
+    fn test_tokenizer_config_add_bos_false() {
+        // Qwen models have add_bos_token: false
+        let json = r#"{"add_bos_token": false, "add_prefix_space": false}"#;
+        let config = TokenizerConfig::from_json(json).unwrap_or_else(|e| {
+            panic!("Failed to parse tokenizer config: {e}");
+        });
+        assert!(!config.add_bos_token);
+    }
+
+    #[test]
+    fn test_tokenizer_config_default() {
+        // When add_bos_token is not present, default to true for backward compat
+        let json = r#"{}"#;
+        let config = TokenizerConfig::from_json(json).unwrap_or_else(|e| {
+            panic!("Failed to parse tokenizer config: {e}");
+        });
+        assert!(config.add_bos_token);
     }
 }

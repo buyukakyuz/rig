@@ -1,5 +1,5 @@
 use candle_core::{Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder, linear_no_bias};
+use candle_nn::{Linear, Module, VarBuilder, linear, linear_no_bias};
 
 use crate::cache::{LayerKvCache, RopeCache};
 use crate::config::TransformerConfig;
@@ -18,7 +18,11 @@ pub struct CausalSelfAttention {
 }
 
 impl CausalSelfAttention {
-    pub fn load(vb: VarBuilder, config: &TransformerConfig) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &TransformerConfig,
+        use_attention_bias: bool,
+    ) -> Result<Self> {
         let head_dim = config.head_dim();
         let num_attention_heads = config.num_attention_heads;
         let num_kv_heads = config.num_kv_heads();
@@ -26,9 +30,19 @@ impl CausalSelfAttention {
         let q_dim = num_attention_heads * head_dim;
         let kv_dim = num_kv_heads * head_dim;
 
-        let q_proj = linear_no_bias(config.hidden_size, q_dim, vb.pp("q_proj"))?;
-        let k_proj = linear_no_bias(config.hidden_size, kv_dim, vb.pp("k_proj"))?;
-        let v_proj = linear_no_bias(config.hidden_size, kv_dim, vb.pp("v_proj"))?;
+        let (q_proj, k_proj, v_proj) = if use_attention_bias {
+            (
+                linear(config.hidden_size, q_dim, vb.pp("q_proj"))?,
+                linear(config.hidden_size, kv_dim, vb.pp("k_proj"))?,
+                linear(config.hidden_size, kv_dim, vb.pp("v_proj"))?,
+            )
+        } else {
+            (
+                linear_no_bias(config.hidden_size, q_dim, vb.pp("q_proj"))?,
+                linear_no_bias(config.hidden_size, kv_dim, vb.pp("k_proj"))?,
+                linear_no_bias(config.hidden_size, kv_dim, vb.pp("v_proj"))?,
+            )
+        };
         let o_proj = linear_no_bias(q_dim, config.hidden_size, vb.pp("o_proj"))?;
 
         let span = tracing::span!(tracing::Level::TRACE, "attn");

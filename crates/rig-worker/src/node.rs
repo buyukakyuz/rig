@@ -432,7 +432,7 @@ impl WorkerNode {
         request: rig_core::InferenceRequest,
     ) -> Result<(), WorkerError> {
         let request_id = request.request_id;
-        info!(%request_id, "Processing request");
+        debug!(%request_id, "Processing request");
 
         if self.stage.is_none() {
             return Err(WorkerError::NoAssignment);
@@ -456,16 +456,11 @@ impl WorkerNode {
                 .await?;
         } else {
             let stage = self.stage.as_mut().ok_or(WorkerError::NoAssignment)?;
-            debug!(%request_id, "Multi-stage pipeline: forwarding to next stage");
-
             let prompt_tokens = activation.metadata.positions.len();
             let start_time = Instant::now();
 
-            debug!(%request_id, "Running forward pass");
             let output = stage.forward(activation)?;
-            debug!(%request_id, "Forward pass complete, sending activation");
             stage.send_activation(&output).await?;
-            debug!(%request_id, "Activation sent to next stage");
 
             self.run_multi_stage_generation_loop(request_id, prompt_tokens, start_time)
                 .await?;
@@ -523,7 +518,6 @@ impl WorkerNode {
             }
         }
 
-        debug!(%request_id, "Streaming request completed");
         Ok(())
     }
 
@@ -584,14 +578,13 @@ impl WorkerNode {
                     let output = stage.forward(activation)?;
 
                     stage.send_activation(&output).await?;
-                    debug!(%request_id, "Decode activation sent to next stage");
                 }
 
                 CoordinatorMessage::FinishGeneration {
                     request_id: _,
                     generated_tokens,
                 } => {
-                    info!(
+                    debug!(
                         %request_id,
                         num_tokens = generated_tokens.len(),
                         "Generation finished"
@@ -609,7 +602,6 @@ impl WorkerNode {
                     streaming_client
                         .send_streaming_complete(request_id, usage)
                         .await?;
-                    debug!(%request_id, "Streaming complete sent to coordinator");
                     break;
                 }
 
@@ -628,7 +620,6 @@ impl WorkerNode {
             }
         }
 
-        debug!(%request_id, "Exiting multi-stage generation loop");
         Ok(())
     }
 }
@@ -659,7 +650,7 @@ async fn run_heartbeat_loop(
         tokio::select! {
             _ = heartbeat_interval.tick() => {
                 match client.heartbeat(NodeStatus::Healthy).await {
-                    Ok(()) => debug!(%node_id, "Heartbeat sent"),
+                    Ok(()) => {},
                     Err(e) => {
                         warn!(%node_id, error = %e, "Heartbeat failed");
                     }

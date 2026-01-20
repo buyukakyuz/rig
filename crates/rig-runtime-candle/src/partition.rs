@@ -16,7 +16,7 @@ use rig_core::types::{
 
 use crate::block::TransformerBlock;
 use crate::cache::RopeCache;
-use crate::config::TransformerConfig;
+use crate::config::{TokenizerConfig, TransformerConfig};
 use crate::error::{CandleError, Result};
 use crate::kv_cache::CandleKvCache;
 
@@ -35,6 +35,7 @@ pub struct CandlePartition {
     tokenizer: HfTokenizer,
     chat_template: Option<String>,
     eos_token_str: String,
+    add_bos_token: bool,
 }
 
 impl CandlePartition {
@@ -57,10 +58,27 @@ impl CandlePartition {
         let tokenizer = HfTokenizer::from_file(&tokenizer_path)
             .map_err(|e| CandleError::TokenizerLoad(e.to_string()))?;
 
+        let tokenizer_config_path = model_path.join("tokenizer_config.json");
+        let add_bos_token = if tokenizer_config_path.exists() {
+            TokenizerConfig::from_file(&tokenizer_config_path)
+                .map(|c| c.add_bos_token)
+                .unwrap_or(true)
+        } else {
+            true
+        };
         let (chat_template, eos_token_str) = Self::load_chat_template(model_path)?;
         let dtype = Self::convert_dtype(spec.dtype)?;
         let safetensor_files = Self::find_safetensor_files(model_path)?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&safetensor_files, dtype, device)? };
+
+        let use_attention_bias = vb
+            .pp("model.layers.0.self_attn.q_proj")
+            .contains_tensor("bias");
+
+        tracing::info!(
+            use_attention_bias = use_attention_bias,
+            "Detected model architecture from weights"
+        );
 
         let is_first = spec.layer_range.start == 0;
         let is_last = spec.layer_range.end == config.num_hidden_layers;
@@ -77,8 +95,11 @@ impl CandlePartition {
 
         let mut blocks = Vec::with_capacity(spec.layer_range.len());
         for layer_idx in spec.layer_range.clone() {
-            let block =
-                TransformerBlock::load(vb.pp(format!("model.layers.{layer_idx}")), &config)?;
+            let block = TransformerBlock::load(
+                vb.pp(format!("model.layers.{layer_idx}")),
+                &config,
+                use_attention_bias,
+            )?;
             blocks.push(block);
         }
 
@@ -130,6 +151,7 @@ impl CandlePartition {
             tokenizer,
             chat_template,
             eos_token_str,
+            add_bos_token,
         })
     }
 
@@ -457,7 +479,8 @@ impl CandlePartition {
             .map_err(|e| CandleError::TokenizationFailed(e.to_string()))?;
 
         let mut ids: Vec<u32> = encoding.get_ids().to_vec();
-        if add_bos {
+
+        if add_bos && self.add_bos_token {
             ids.insert(0, self.bos_token());
         }
         Ok(ids)

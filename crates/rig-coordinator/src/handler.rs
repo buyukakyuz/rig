@@ -45,8 +45,6 @@ impl ConnectionHandler {
     }
 
     pub async fn run(mut self) -> Result<(), CoordError> {
-        tracing::debug!(addr = %self.remote_addr, "Connection handler started");
-
         let result = self.message_loop().await;
 
         if let Some(node_id) = self.node_id
@@ -306,7 +304,7 @@ impl ConnectionHandler {
                 generated_tokens,
                 reason,
             }) => {
-                tracing::info!(%request_id, reason = %reason, "Returning FinishGeneration");
+                tracing::debug!(%request_id, reason = %reason, "Returning FinishGeneration");
                 Ok(CoordinatorMessage::FinishGeneration {
                     request_id,
                     generated_tokens,
@@ -335,7 +333,7 @@ impl ConnectionHandler {
         request_id: rig_core::RequestId,
         usage: rig_core::UsageStats,
     ) -> Result<CoordinatorMessage, CoordError> {
-        tracing::info!(
+        tracing::debug!(
             %request_id,
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,
@@ -364,12 +362,6 @@ impl ConnectionHandler {
         &self,
         req: CliSubmitRequest,
     ) -> Result<CliResponse, CoordError> {
-        tracing::info!(
-            addr = %self.remote_addr,
-            pipeline_id = %req.pipeline_id,
-            "CLI submit request"
-        );
-
         let pipeline_info = self.state.get_pipeline_info(req.pipeline_id).await?;
         let is_multi_stage = pipeline_info.stages.len() > 1;
 
@@ -458,7 +450,7 @@ impl ConnectionHandler {
 
         match timeout(idle_timeout, complete_rx).await {
             Ok(Ok(usage)) => {
-                tracing::info!(%request_id, "Streaming request completed");
+                tracing::debug!(%request_id, "Streaming request completed");
                 Ok(CliResponse::StreamComplete { request_id, usage })
             }
             Ok(Err(_recv_error)) => {
