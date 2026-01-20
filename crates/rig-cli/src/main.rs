@@ -6,7 +6,7 @@ mod commands;
 mod output;
 
 use commands::{
-    coordinator::CoordinatorArgs, generate::GenerateArgs, pipeline::PipelineArgs,
+    coordinator::CoordinatorArgs, demo::DemoArgs, generate::GenerateArgs, pipeline::PipelineArgs,
     status::StatusArgs, worker::WorkerArgs,
 };
 
@@ -23,6 +23,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Start a demo cluster and chat interactively.
+    #[command(name = "demo")]
+    Demo(DemoArgs),
+
     /// Start the coordinator server.
     #[command(name = "coordinator")]
     Coordinator(CoordinatorArgs),
@@ -64,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
     setup_logging(&cli.log_level);
 
     match cli.command {
+        Commands::Demo(args) => commands::run_demo(args).await,
         Commands::Coordinator(args) => commands::run_coordinator(args).await,
         Commands::Worker(args) => commands::run_worker(args).await,
         Commands::Generate(args) => commands::run_generate(args).await,

@@ -8,47 +8,36 @@ Got a MacBook, an old desktop with a GPU, and a work laptop? None of them can ru
 
 ## Quick Start
 
-**Build** (pick your platform):
+**1. Build** (pick your platform):
 
-Apple Silicon:
 ```bash
+# Apple Silicon
 cargo build --release -p rig-cli --features metal
-```
 
-NVIDIA:
-```bash
+# NVIDIA
 cargo build --release -p rig-cli --features cuda
-```
 
-CPU only:
-```bash
+# CPU only
 cargo build --release -p rig-cli
 ```
 
-**Download a model:**
+Optionally, alias for convenience: `alias rig=./target/release/rig`
+
+**2. Download a model:**
 
 ```bash
 hf download TinyLlama/TinyLlama-1.1B-Chat-v1.0 --local-dir models/tiny-llama
 ```
 
-**Run a local 2-node cluster:**
+**3. Try it:**
 
 ```bash
-MODEL_PATH=models/tiny-llama MODEL_NAME=tiny-llama \
-    ./scripts/local-cluster/cluster.sh start
+./target/release/rig demo --model models/tiny-llama
 ```
 
-**Create pipeline** (in another terminal):
+That's it! This starts a local 2-worker cluster and opens an interactive chat.
 
-```bash
-./scripts/local-cluster/cluster.sh pipeline
-```
-
-**Generate:**
-
-```bash
-./scripts/local-cluster/cluster.sh generate --chat "Hello, how are you?"
-```
+Run `./target/release/rig demo --help` for options (workers, temperature, system prompt, etc.).
 
 ## Multi-Machine Setup
 

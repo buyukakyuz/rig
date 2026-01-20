@@ -216,7 +216,7 @@ impl PipelineStage {
                 current_decoded_text = decoded_text;
             }
 
-            if generated_tokens.len().is_multiple_of(10) {
+            if generated_tokens.len() % 10 == 0 {
                 debug!(count = generated_tokens.len(), "Generated tokens");
             }
         }
