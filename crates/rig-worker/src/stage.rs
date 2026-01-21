@@ -70,10 +70,9 @@ impl MultiStageGenerationState {
 
     fn convert_stop_reason(reason: StopReason) -> StopReasonProto {
         match reason {
-            StopReason::MaxTokens => StopReasonProto::MaxTokens,
             StopReason::EosToken => StopReasonProto::EosToken,
             StopReason::StopSequence(seq) => StopReasonProto::StopSequence(seq),
-            StopReason::NotStopped => StopReasonProto::MaxTokens,
+            StopReason::MaxTokens | StopReason::NotStopped => StopReasonProto::MaxTokens,
         }
     }
 }
@@ -229,7 +228,9 @@ impl PipelineStage {
         let request_id = activation.metadata.request_id;
         let eos_token = self.tokenizer().map_or(2, Tokenizer::eos_token);
 
-        if !self.generation_states.contains_key(&request_id) {
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            self.generation_states.entry(request_id)
+        {
             let params = activation
                 .metadata
                 .generation_params
@@ -239,7 +240,7 @@ impl PipelineStage {
             let prompt_tokens = activation.metadata.positions.len();
 
             let state = MultiStageGenerationState::new(&params, eos_token, prompt_tokens, None);
-            self.generation_states.insert(request_id, state);
+            e.insert(state);
 
             debug!(
                 %request_id,

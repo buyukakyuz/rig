@@ -6,7 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rig_core::{Address, ModelId};
-use rig_worker::{CandleConfig, RuntimeConfig, WorkerConfig, WorkerNode};
+use rig_runtime_candle::CandleRuntime;
+use rig_worker::{WorkerConfig, WorkerNode};
 use tokio::signal;
 
 #[derive(Debug, Args)]
@@ -81,17 +82,13 @@ pub async fn run_worker(args: WorkerArgs) -> Result<()> {
         );
     }
 
-    tracing::info!(device = %args.device, "Using Candle runtime");
-    let runtime_config = RuntimeConfig::Candle(CandleConfig::new().with_device(&args.device));
-
     let heartbeat_interval = Duration::from_secs(args.heartbeat_interval);
 
     let config = WorkerConfig::default()
         .with_coordinator_addr(Address::tcp(coordinator_addr))
         .with_listen_addr(args.listen_addr)
         .with_heartbeat_interval(heartbeat_interval)
-        .with_model_paths(model_paths.clone())
-        .with_runtime_config(runtime_config);
+        .with_model_paths(model_paths.clone());
 
     tracing::info!(
         coordinator = %coordinator_addr,
@@ -100,7 +97,13 @@ pub async fn run_worker(args: WorkerArgs) -> Result<()> {
         "Starting worker"
     );
 
-    let mut node = WorkerNode::new(config);
+    tracing::info!(device = %args.device, "Creating Candle runtime");
+    let runtime = match args.device.as_str() {
+        "cpu" => CandleRuntime::cpu()?,
+        _ => CandleRuntime::new()?,
+    };
+
+    let mut node = WorkerNode::new(config, runtime);
 
     let (model_id, _model_path) = model_paths
         .iter()

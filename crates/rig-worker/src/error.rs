@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use rig_core::{CodecError, PartitionError, RuntimeError, TransportError};
-use rig_runtime_candle::CandleError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -53,9 +52,6 @@ pub enum WorkerError {
 
     #[error("Shutdown requested")]
     Shutdown,
-
-    #[error("Candle error: {0}")]
-    Candle(#[from] CandleError),
 
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),

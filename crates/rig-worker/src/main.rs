@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use rig_core::{Address, ModelId};
+use rig_runtime_candle::CandleRuntime;
 use rig_worker::{WorkerConfig, WorkerNode};
 use tracing::{error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -52,7 +53,14 @@ async fn main() -> Result<()> {
         "Configuration loaded"
     );
 
-    let mut node = WorkerNode::new(config);
+    let device = std::env::var("DEVICE").unwrap_or_else(|_| "auto".to_string());
+    info!(device = %device, "Creating Candle runtime");
+    let runtime = match device.as_str() {
+        "cpu" => CandleRuntime::cpu()?,
+        _ => CandleRuntime::new()?,
+    };
+
+    let mut node = WorkerNode::new(config, runtime);
 
     let node_shutdown_tx = node.shutdown_receiver();
     tokio::spawn(async move {

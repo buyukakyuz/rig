@@ -5,7 +5,7 @@ pub mod node;
 pub mod peer_connection;
 pub mod stage;
 
-pub use config::{CandleConfig, RuntimeConfig, WorkerConfig};
+pub use config::WorkerConfig;
 pub use coordinator_client::CoordinatorClient;
 pub use error::WorkerError;
 pub use node::WorkerNode;

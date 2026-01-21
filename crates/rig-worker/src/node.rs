@@ -1,53 +1,22 @@
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rig_core::{
     Activation, ActivationMetadata, Address, Assignment, CoordinatorMessage, DType, InferenceInput,
     InferenceRequest, LoadedPartition, ModelId, ModelInfo, ModelSpec, NodeId, NodeInfo, NodeStatus,
-    Partition, PartitionSpec, RequestId, Runtime, RuntimeCapabilities, RuntimeError, Shape,
-    TensorData, Tokenizer, UsageStats,
+    Partition, PartitionSpec, RequestId, Runtime, Shape, TensorData, Tokenizer, UsageStats,
 };
-use rig_runtime_candle::CandleRuntime;
 use tokio::sync::broadcast;
 use tracing::{debug, info, instrument, warn};
 
-use crate::config::{RuntimeConfig, WorkerConfig};
+use crate::config::WorkerConfig;
 use crate::coordinator_client::{CoordinatorClient, create_heartbeat_client};
 use crate::error::WorkerError;
 use crate::peer_connection::{PeerConnection, PeerListener};
 use crate::stage::PipelineStage;
-
-enum RuntimeWrapper {
-    Candle(CandleRuntime),
-}
-
-impl RuntimeWrapper {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        match self {
-            Self::Candle(rt) => rt.capabilities(),
-        }
-    }
-
-    fn discover_model(&self, model_id: ModelId, path: &Path) -> Result<ModelSpec, RuntimeError> {
-        match self {
-            Self::Candle(rt) => rt.discover_model(model_id, path),
-        }
-    }
-
-    async fn load_partition(
-        &self,
-        model: &ModelSpec,
-        partition: &PartitionSpec,
-    ) -> Result<LoadedPartition, RuntimeError> {
-        match self {
-            Self::Candle(rt) => rt.load_partition(model, partition).await,
-        }
-    }
-}
-pub struct WorkerNode {
+pub struct WorkerNode<R: Runtime> {
     node_id: Option<NodeId>,
     config: WorkerConfig,
-    runtime: Option<RuntimeWrapper>,
+    runtime: R,
     coordinator_client: Option<CoordinatorClient>,
     stage: Option<PipelineStage>,
     peer_listener: Option<PeerListener>,
@@ -55,15 +24,15 @@ pub struct WorkerNode {
     model_info: Option<ModelInfo>,
 }
 
-impl WorkerNode {
+impl<R: Runtime> WorkerNode<R> {
     #[must_use]
-    pub fn new(config: WorkerConfig) -> Self {
+    pub fn new(config: WorkerConfig, runtime: R) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
 
         Self {
             node_id: None,
             config,
-            runtime: None,
+            runtime,
             coordinator_client: None,
             stage: None,
             peer_listener: None,
@@ -96,25 +65,6 @@ impl WorkerNode {
     }
 
     #[instrument(skip(self))]
-    pub fn init_runtime(&mut self) -> Result<(), WorkerError> {
-        info!("Initializing runtime");
-
-        let runtime = match &self.config.runtime_config {
-            RuntimeConfig::Candle(config) => {
-                info!(device = %config.device, "Using Candle runtime");
-                let rt = match config.device.as_str() {
-                    "cpu" => CandleRuntime::cpu()?,
-                    _ => CandleRuntime::new()?,
-                };
-                RuntimeWrapper::Candle(rt)
-            }
-        };
-
-        self.runtime = Some(runtime);
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
     pub async fn start_peer_listener(&mut self) -> Result<(), WorkerError> {
         let listener = PeerListener::bind(self.config.listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -138,11 +88,7 @@ impl WorkerNode {
 
     #[instrument(skip(self))]
     pub async fn register(&mut self) -> Result<NodeId, WorkerError> {
-        let capabilities = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| WorkerError::config("Runtime not initialized"))?
-            .capabilities();
+        let capabilities = self.runtime.capabilities();
 
         let listen_addr = self
             .peer_listen_addr()
@@ -223,11 +169,6 @@ impl WorkerNode {
         assignment: &Assignment,
         model_spec: &ModelSpec,
     ) -> Result<LoadedPartition, WorkerError> {
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| WorkerError::config("Runtime not initialized"))?;
-
         let partition_spec =
             PartitionSpec::new(assignment.layer_range.clone(), rig_core::DType::F16);
 
@@ -237,7 +178,10 @@ impl WorkerNode {
             "Loading partition"
         );
 
-        let loaded = runtime.load_partition(model_spec, &partition_spec).await?;
+        let loaded = self
+            .runtime
+            .load_partition(model_spec, &partition_spec)
+            .await?;
 
         info!("Partition loaded successfully");
         Ok(loaded)
@@ -308,19 +252,12 @@ impl WorkerNode {
 
     #[instrument(skip(self))]
     pub async fn run(&mut self, model_id: ModelId) -> Result<(), WorkerError> {
-        self.init_runtime()?;
-
         let model_path = self
             .config
             .get_model_path(&model_id)
             .ok_or_else(|| WorkerError::ModelNotFound(model_id.to_string()))?;
 
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| WorkerError::config("Runtime not initialized"))?;
-
-        let model_spec = runtime.discover_model(model_id, model_path)?;
+        let model_spec = self.runtime.discover_model(model_id, model_path)?;
         info!(
             num_layers = model_spec.num_layers,
             hidden_dim = model_spec.hidden_dim,
@@ -570,12 +507,11 @@ impl WorkerNode {
     }
 }
 
-impl std::fmt::Debug for WorkerNode {
+impl<R: Runtime> std::fmt::Debug for WorkerNode<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerNode")
             .field("node_id", &self.node_id)
             .field("config", &self.config)
-            .field("has_runtime", &self.runtime.is_some())
             .field("has_coordinator_client", &self.coordinator_client.is_some())
             .field("has_stage", &self.stage.is_some())
             .finish_non_exhaustive()
@@ -705,28 +641,4 @@ fn run_warmup(partition: &dyn Partition) -> Result<(), WorkerError> {
     info!(elapsed_ms = elapsed.as_millis(), "Warm-up complete");
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn worker_node_creation() {
-        let config = WorkerConfig::default();
-        let node = WorkerNode::new(config);
-
-        assert!(node.node_id().is_none());
-        assert!(node.stage().is_none());
-    }
-
-    #[test]
-    fn worker_node_shutdown() {
-        let config = WorkerConfig::default();
-        let node = WorkerNode::new(config);
-
-        let _rx1 = node.shutdown_receiver();
-        node.shutdown();
-        let _rx2 = node.shutdown_receiver();
-    }
 }

@@ -6,50 +6,11 @@ use std::time::Duration;
 use rig_core::{Address, ModelId};
 
 #[derive(Debug, Clone)]
-pub enum RuntimeConfig {
-    Candle(CandleConfig),
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self::Candle(CandleConfig::default())
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CandleConfig {
-    pub device: String,
-}
-
-impl CandleConfig {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            device: "auto".to_string(),
-        }
-    }
-
-    #[must_use]
-    pub fn cpu() -> Self {
-        Self {
-            device: "cpu".to_string(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_device(mut self, device: impl Into<String>) -> Self {
-        self.device = device.into();
-        self
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub coordinator_addr: Address,
     pub listen_addr: SocketAddr,
     pub heartbeat_interval: Duration,
     pub model_paths: HashMap<ModelId, PathBuf>,
-    pub runtime_config: RuntimeConfig,
     pub enable_warmup: bool,
 }
 
@@ -93,12 +54,6 @@ impl WorkerConfig {
     }
 
     #[must_use]
-    pub fn with_runtime_config(mut self, config: RuntimeConfig) -> Self {
-        self.runtime_config = config;
-        self
-    }
-
-    #[must_use]
     pub const fn with_warmup(mut self, enable: bool) -> Self {
         self.enable_warmup = enable;
         self
@@ -121,7 +76,6 @@ impl Default for WorkerConfig {
             listen_addr,
             heartbeat_interval: Duration::from_secs(10),
             model_paths: HashMap::new(),
-            runtime_config: RuntimeConfig::default(),
             enable_warmup: true,
         }
     }
