@@ -10,7 +10,6 @@ use clap::Args;
 use rig_coordinator::{CoordinatorConfig, CoordinatorServer, HeartbeatMonitor};
 use rig_core::types::protocol::CliCreatePipelineAutoRequest;
 use rig_core::{Address, GenerationParams, InferenceInput, ModelId, PipelineId};
-use rig_runtime_candle::CandleRuntime;
 use rig_worker::{WorkerConfig, WorkerNode};
 use tokio::sync::broadcast;
 
@@ -137,10 +136,7 @@ impl DemoCluster {
                 .with_heartbeat_interval(Duration::from_secs(10))
                 .with_model_paths(model_paths.clone());
 
-            let runtime = match args.device.as_str() {
-                "cpu" => CandleRuntime::cpu()?,
-                _ => CandleRuntime::new()?,
-            };
+            let runtime = crate::runtime::create_runtime(&args.device)?;
 
             let mut worker = WorkerNode::new(worker_config, runtime);
             let worker_shutdown_rx = shutdown_tx.subscribe();

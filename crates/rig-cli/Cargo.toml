@@ -18,7 +18,7 @@ rig-coordinator.workspace = true
 rig-worker.workspace = true
 rig-transport-tcp = { path = "../rig-transport-tcp" }
 rig-message-bincode = { path = "../rig-message-bincode" }
-rig-runtime-candle = { path = "../rig-runtime-candle" }
+rig-runtime-candle = { path = "../rig-runtime-candle", optional = true }
 
 tokio.workspace = true
 anyhow.workspace = true
@@ -34,9 +34,10 @@ serde_json = "1"
 num_cpus = "1"
 
 [features]
-default = []
-metal = ["rig-runtime-candle/metal"]
-cuda = ["rig-runtime-candle/cuda"]
+default = ["runtime-candle"]
+runtime-candle = ["dep:rig-runtime-candle"]
+metal = ["runtime-candle", "rig-runtime-candle/metal"]
+cuda = ["runtime-candle", "rig-runtime-candle/cuda"]
 
 [lints]
 workspace = true

@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rig_core::{Address, ModelId};
-use rig_runtime_candle::CandleRuntime;
 use rig_worker::{WorkerConfig, WorkerNode};
 use tokio::signal;
 
@@ -74,11 +73,13 @@ pub async fn run_worker(args: WorkerArgs) -> Result<()> {
         model_paths.insert(model_id, path);
     }
 
-    if args.runtime.to_lowercase() != "candle" {
-        tracing::warn!(
-            runtime = %args.runtime,
-            "Unknown runtime '{}', using 'candle'",
-            args.runtime
+    let compiled_runtime = crate::runtime::runtime_name();
+    if args.runtime.to_lowercase() != compiled_runtime {
+        tracing::info!(
+            requested = %args.runtime,
+            compiled = %compiled_runtime,
+            "Using compiled runtime '{}'",
+            compiled_runtime
         );
     }
 
@@ -97,11 +98,7 @@ pub async fn run_worker(args: WorkerArgs) -> Result<()> {
         "Starting worker"
     );
 
-    tracing::info!(device = %args.device, "Creating Candle runtime");
-    let runtime = match args.device.as_str() {
-        "cpu" => CandleRuntime::cpu()?,
-        _ => CandleRuntime::new()?,
-    };
+    let runtime = crate::runtime::create_runtime(&args.device)?;
 
     let mut node = WorkerNode::new(config, runtime);
 

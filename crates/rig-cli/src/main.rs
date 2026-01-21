@@ -4,6 +4,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 mod client;
 mod commands;
 mod output;
+mod runtime;
 
 use commands::{
     benchmark::BenchmarkArgs, coordinator::CoordinatorArgs, demo::DemoArgs, generate::GenerateArgs,
