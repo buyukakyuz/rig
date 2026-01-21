@@ -347,6 +347,10 @@ impl WorkerNode {
 
         let partition = self.load_partition(&assignment, &model_spec).await?;
 
+        if self.config.enable_warmup {
+            run_warmup(partition.as_ref())?;
+        }
+
         let (prev_peer, next_peer) = self.establish_peer_connections(&assignment).await?;
 
         debug!(
@@ -731,6 +735,39 @@ fn create_decode_activation(request_id: RequestId, token: u32, position: u32) ->
     let metadata = ActivationMetadata::new(request_id, 0, vec![position], false);
 
     Activation::new(data, shape, metadata)
+}
+
+#[instrument(skip(partition))]
+fn run_warmup(partition: &dyn Partition) -> Result<(), WorkerError> {
+    let is_first_stage = partition.spec().layer_range.start == 0;
+    if !is_first_stage {
+        info!("Skipping warm-up for non-first stage partition");
+        return Ok(());
+    }
+
+    let start = Instant::now();
+    info!("Running warm-up pass to initialize KV cache and compile GPU kernels");
+
+    let warmup_token: u32 = 1;
+    let bytes = warmup_token.to_le_bytes().to_vec();
+    let shape = Shape::new(vec![1, 1, 1]);
+    let data = TensorData::cpu(bytes, DType::I8);
+
+    let warmup_request_id = RequestId::new();
+    let metadata = ActivationMetadata::new(warmup_request_id, 0, vec![0], true);
+
+    let warmup_activation = Activation::new(data, shape, metadata);
+
+    let _ = partition
+        .forward(warmup_activation)
+        .map_err(|e| WorkerError::partition_processing(format!("Warm-up forward failed: {e}")))?;
+
+    partition.release_request_cache(warmup_request_id);
+
+    let elapsed = start.elapsed();
+    info!(elapsed_ms = elapsed.as_millis(), "Warm-up complete");
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -50,6 +50,7 @@ pub struct WorkerConfig {
     pub heartbeat_interval: Duration,
     pub model_paths: HashMap<ModelId, PathBuf>,
     pub runtime_config: RuntimeConfig,
+    pub enable_warmup: bool,
 }
 
 impl WorkerConfig {
@@ -98,6 +99,12 @@ impl WorkerConfig {
     }
 
     #[must_use]
+    pub const fn with_warmup(mut self, enable: bool) -> Self {
+        self.enable_warmup = enable;
+        self
+    }
+
+    #[must_use]
     pub fn get_model_path(&self, model_id: &ModelId) -> Option<&PathBuf> {
         self.model_paths.get(model_id)
     }
@@ -115,6 +122,7 @@ impl Default for WorkerConfig {
             heartbeat_interval: Duration::from_secs(10),
             model_paths: HashMap::new(),
             runtime_config: RuntimeConfig::default(),
+            enable_warmup: true,
         }
     }
 }
