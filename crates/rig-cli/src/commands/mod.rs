@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod coordinator;
 pub mod demo;
 pub mod generate;
@@ -5,6 +6,7 @@ pub mod pipeline;
 pub mod status;
 pub mod worker;
 
+pub use benchmark::run_benchmark;
 pub use coordinator::run_coordinator;
 pub use demo::run_demo;
 pub use generate::run_generate;

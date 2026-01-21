@@ -6,8 +6,8 @@ mod commands;
 mod output;
 
 use commands::{
-    coordinator::CoordinatorArgs, demo::DemoArgs, generate::GenerateArgs, pipeline::PipelineArgs,
-    status::StatusArgs, worker::WorkerArgs,
+    benchmark::BenchmarkArgs, coordinator::CoordinatorArgs, demo::DemoArgs, generate::GenerateArgs,
+    pipeline::PipelineArgs, status::StatusArgs, worker::WorkerArgs,
 };
 
 #[derive(Debug, Parser)]
@@ -46,6 +46,10 @@ enum Commands {
     /// Manage pipelines.
     #[command(name = "pipeline")]
     Pipeline(PipelineArgs),
+
+    /// Run inference benchmarks.
+    #[command(name = "bench")]
+    Benchmark(BenchmarkArgs),
 }
 
 fn setup_logging(log_level: &str) {
@@ -74,5 +78,6 @@ async fn main() -> anyhow::Result<()> {
         Commands::Generate(args) => commands::run_generate(args).await,
         Commands::Status(args) => commands::run_status(args).await,
         Commands::Pipeline(args) => commands::run_pipeline(args).await,
+        Commands::Benchmark(args) => commands::run_benchmark(args).await,
     }
 }

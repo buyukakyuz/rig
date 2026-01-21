@@ -22,4 +22,5 @@ scripts/**/.coordinator
 scripts/**/.pipeline
 scripts/**/.model
 /.rig/
-candle/
+candle/.benchmarks/
+.benchmarks/

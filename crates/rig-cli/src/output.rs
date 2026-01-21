@@ -82,3 +82,71 @@ pub struct StageOutput {
     pub layer_range: String,
     pub ready: bool,
 }
+
+// Benchmark output types
+
+#[derive(Serialize)]
+pub struct BenchmarkOutput {
+    pub metadata: BenchmarkMetadata,
+    pub memory: MemoryMetrics,
+    pub results: Vec<SequenceLengthResult>,
+    pub summary: BenchmarkSummary,
+}
+
+#[derive(Serialize)]
+pub struct BenchmarkMetadata {
+    pub model_path: String,
+    pub device: String,
+    pub dtype: String,
+    pub generation_length: usize,
+    pub runs_per_config: usize,
+    pub warmup_runs: usize,
+    pub timestamp: String,
+}
+
+#[derive(Serialize)]
+#[allow(clippy::struct_field_names)]
+pub struct MemoryMetrics {
+    pub device_total_bytes: u64,
+    pub baseline_free_bytes: u64,
+    pub post_load_free_bytes: u64,
+    pub model_memory_bytes: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct SequenceLengthResult {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub runs: Vec<SingleRunMetrics>,
+    pub aggregated: AggregatedMetrics,
+}
+
+#[derive(Clone, Serialize)]
+pub struct SingleRunMetrics {
+    pub run_index: usize,
+    pub prefill_time_ms: u64,
+    pub decode_time_ms: u64,
+    pub total_time_ms: u64,
+    pub time_to_first_token_ms: u64,
+    pub prefill_tokens_per_second: f64,
+    pub decode_tokens_per_second: f64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AggregatedMetrics {
+    pub mean_prefill_tok_s: f64,
+    pub std_prefill_tok_s: f64,
+    pub mean_decode_tok_s: f64,
+    pub std_decode_tok_s: f64,
+    pub mean_ttft_ms: f64,
+    pub std_ttft_ms: f64,
+    pub mean_total_time_ms: f64,
+}
+
+#[derive(Serialize)]
+pub struct BenchmarkSummary {
+    pub peak_prefill_tok_s: f64,
+    pub peak_decode_tok_s: f64,
+    pub min_ttft_ms: f64,
+    pub total_benchmark_time_seconds: f64,
+}

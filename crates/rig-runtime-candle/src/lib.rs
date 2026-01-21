@@ -37,3 +37,5 @@ pub use kv_cache::CandleKvCache;
 pub use attention::CausalSelfAttention;
 pub use block::TransformerBlock;
 pub use mlp::Mlp;
+
+pub use candle_core::Device;

@@ -309,6 +309,33 @@ impl UsageStats {
             (self.completion_tokens as f64) / (self.total_time_ms as f64 / 1000.0)
         }
     }
+
+    #[must_use]
+    pub const fn decode_time_ms(&self) -> u64 {
+        self.total_time_ms
+            .saturating_sub(self.time_to_first_token_ms)
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn prefill_tokens_per_second(&self) -> f64 {
+        if self.time_to_first_token_ms == 0 {
+            0.0
+        } else {
+            (self.prompt_tokens as f64) / (self.time_to_first_token_ms as f64 / 1000.0)
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn decode_tokens_per_second(&self) -> f64 {
+        let decode_ms = self.decode_time_ms();
+        if decode_ms == 0 {
+            0.0
+        } else {
+            (self.completion_tokens as f64) / (decode_ms as f64 / 1000.0)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
