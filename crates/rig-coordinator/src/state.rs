@@ -1,16 +1,16 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::time::Instant;
 
 use rig_core::{
-    Address, Assignment, CoordError, InferenceRequest, ModelId, ModelInfo, Neighbors, NodeId,
-    NodeInfo, NodeStatus, PeerAddress, PipelineConfig, PipelineId, RequestId, StageId, UsageStats,
+    Address, Assignment, CoordError, GenerationDecision, InferenceRequest, ModelId, ModelInfo,
+    Neighbors, NodeId, NodeInfo, NodeStatus, PeerAddress, PipelineConfig, PipelineId, RequestId,
+    StageId, UsageStats,
 };
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::warn;
 
 use crate::config::CoordinatorConfig;
-use crate::inference::GenerationDecision;
 
 #[derive(Debug)]
 pub struct NodeRecord {
@@ -77,6 +77,7 @@ pub struct CoordinatorState {
     streaming_sessions: RwLock<HashMap<RequestId, StreamingSession>>,
     model_registry: RwLock<HashMap<ModelId, (usize, usize)>>,
     generation_decisions: RwLock<HashMap<RequestId, GenerationDecision>>,
+    active_multi_stage_requests: RwLock<HashSet<RequestId>>,
 }
 
 impl std::fmt::Debug for CoordinatorState {
@@ -90,6 +91,7 @@ impl std::fmt::Debug for CoordinatorState {
             .field("streaming_sessions", &"...")
             .field("model_registry", &"...")
             .field("generation_decisions", &"...")
+            .field("active_multi_stage_requests", &"...")
             .finish()
     }
 }
@@ -106,6 +108,7 @@ impl CoordinatorState {
             streaming_sessions: RwLock::new(HashMap::new()),
             model_registry: RwLock::new(HashMap::new()),
             generation_decisions: RwLock::new(HashMap::new()),
+            active_multi_stage_requests: RwLock::new(HashSet::new()),
         }
     }
 
@@ -573,6 +576,39 @@ impl CoordinatorState {
     ) -> Option<GenerationDecision> {
         let mut decisions = self.generation_decisions.write().await;
         decisions.remove(&request_id)
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn register_multi_stage_request(
+        &self,
+        request_id: RequestId,
+    ) -> Result<(), CoordError> {
+        let mut active = self.active_multi_stage_requests.write().await;
+
+        if active.contains(&request_id) {
+            return Err(CoordError::InvalidRequest(format!(
+                "Request {request_id} is already registered as active"
+            )));
+        }
+
+        active.insert(request_id);
+        tracing::debug!(%request_id, "Registered multi-stage request");
+        Ok(())
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn unregister_multi_stage_request(&self, request_id: RequestId) -> bool {
+        let mut active = self.active_multi_stage_requests.write().await;
+        let removed = active.remove(&request_id);
+        if removed {
+            tracing::debug!(%request_id, "Unregistered multi-stage request");
+        }
+        removed
+    }
+
+    pub async fn is_multi_stage_active(&self, request_id: RequestId) -> bool {
+        let active = self.active_multi_stage_requests.read().await;
+        active.contains(&request_id)
     }
 
     pub async fn nodes(&self) -> tokio::sync::RwLockReadGuard<'_, HashMap<NodeId, NodeRecord>> {

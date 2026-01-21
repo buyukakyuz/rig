@@ -8,14 +8,12 @@ use tokio::sync::broadcast;
 
 use crate::config::CoordinatorConfig;
 use crate::handler::ConnectionHandler;
-use crate::inference::InferenceEngine;
 use crate::state::CoordinatorState;
 
 #[derive(Debug)]
 pub struct CoordinatorServer {
     config: CoordinatorConfig,
     state: Arc<CoordinatorState>,
-    engine: Arc<InferenceEngine>,
     shutdown_tx: broadcast::Sender<()>,
     listen_addr: Option<SocketAddr>,
 }
@@ -25,12 +23,10 @@ impl CoordinatorServer {
     pub fn new(config: CoordinatorConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
         let state = Arc::new(CoordinatorState::new(&config));
-        let engine = Arc::new(InferenceEngine::new(Arc::clone(&state)));
 
         Self {
             config,
             state,
-            engine,
             shutdown_tx,
             listen_addr: None,
         }
@@ -88,7 +84,6 @@ impl CoordinatorServer {
 
                             let handler = ConnectionHandler::new(
                                 Arc::clone(&self.state),
-                                Arc::clone(&self.engine),
                                 transport,
                                 addr,
                             );

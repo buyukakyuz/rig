@@ -1,10 +1,9 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
-use rig_coordinator::{CoordinatorConfig, CoordinatorServer, InferenceEngine};
+use rig_coordinator::{CoordinatorConfig, CoordinatorServer};
 use rig_core::{
     Address, Codec, CoordinatorIncoming, CoordinatorMessage, CoordinatorOutgoing, FramedTransport,
     HeartbeatRequest, NodeId, NodeInfo, NodeStatus, RegisterRequest, RuntimeCapabilities,
@@ -71,16 +70,12 @@ async fn start_test_server() -> (SocketAddr, CoordinatorServer, tokio::task::Joi
             .unwrap_or_else(|e| panic!("local_addr failed: {e}"));
         addr_tx.send(addr).ok();
 
-        let engine = Arc::new(InferenceEngine::new(state.clone()));
-
         loop {
             match listener.accept_with_socket_addr().await {
                 Ok((transport, remote_addr)) => {
                     let handler_state = state.clone();
-                    let handler_engine = engine.clone();
                     let handler = rig_coordinator::handler::ConnectionHandler::new(
                         handler_state,
-                        handler_engine,
                         transport,
                         remote_addr,
                     );

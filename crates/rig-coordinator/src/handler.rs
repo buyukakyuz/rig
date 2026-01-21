@@ -11,12 +11,10 @@ use rig_message_bincode::BincodeCodec;
 use rig_transport_tcp::TcpTransport;
 use tokio::time::timeout;
 
-use crate::inference::{GenerationDecision, InferenceEngine};
 use crate::state::CoordinatorState;
 
 pub struct ConnectionHandler {
     state: Arc<CoordinatorState>,
-    engine: Arc<InferenceEngine>,
     transport: TcpTransport,
     codec: BincodeCodec,
     node_id: Option<NodeId>,
@@ -29,13 +27,11 @@ impl ConnectionHandler {
     #[allow(clippy::missing_const_for_fn)]
     pub fn new(
         state: Arc<CoordinatorState>,
-        engine: Arc<InferenceEngine>,
         transport: TcpTransport,
         remote_addr: SocketAddr,
     ) -> Self {
         Self {
             state,
-            engine,
             transport,
             codec: BincodeCodec::new(),
             node_id: None,
@@ -130,12 +126,11 @@ impl ConnectionHandler {
             WorkerMessage::GetPendingRequest { pipeline_id } => {
                 self.handle_get_pending_request(pipeline_id).await
             }
-            WorkerMessage::ReturnLogits {
+            WorkerMessage::ReturnGenerationDecision {
                 request_id,
-                logits,
-                eos_token,
+                decision,
             } => {
-                self.handle_return_logits(request_id, logits, eos_token)
+                self.handle_return_generation_decision(request_id, decision)
                     .await
             }
             WorkerMessage::TokenGenerated {
@@ -255,23 +250,18 @@ impl ConnectionHandler {
         Ok(CoordinatorMessage::PendingRequest(request))
     }
 
-    async fn handle_return_logits(
+    async fn handle_return_generation_decision(
         &self,
         request_id: rig_core::RequestId,
-        logits: Vec<f32>,
-        eos_token: u32,
+        decision: rig_core::GenerationDecision,
     ) -> Result<CoordinatorMessage, CoordError> {
+        let is_finished = matches!(decision, rig_core::GenerationDecision::Finish { .. });
+
         tracing::debug!(
             %request_id,
-            logits_len = logits.len(),
-            eos_token,
-            "Received logits from last stage"
+            is_finished,
+            "Received generation decision from last stage"
         );
-
-        let decision = self
-            .engine
-            .process_logits(request_id, &logits, eos_token)
-            .await?;
 
         self.state
             .store_generation_decision(request_id, decision)
@@ -287,11 +277,7 @@ impl ConnectionHandler {
         tracing::trace!(%request_id, "Generation control poll");
 
         match self.state.take_generation_decision(request_id).await {
-            Some(GenerationDecision::Continue {
-                request_id,
-                token,
-                position,
-            }) => {
+            Some(rig_core::GenerationDecision::Continue { token, position }) => {
                 tracing::debug!(%request_id, token, position, "Returning ContinueGeneration");
                 Ok(CoordinatorMessage::ContinueGeneration {
                     request_id,
@@ -299,13 +285,12 @@ impl ConnectionHandler {
                     position,
                 })
             }
-            Some(GenerationDecision::Finish {
-                request_id,
+            Some(rig_core::GenerationDecision::Finish {
                 generated_tokens,
-                reason,
+                stop_reason,
                 time_to_first_token_ms,
             }) => {
-                tracing::debug!(%request_id, reason = %reason, "Returning FinishGeneration");
+                tracing::debug!(%request_id, reason = %stop_reason, "Returning FinishGeneration");
                 Ok(CoordinatorMessage::FinishGeneration {
                     request_id,
                     generated_tokens,
@@ -372,16 +357,8 @@ impl ConnectionHandler {
                 .with_params(req.params.clone());
 
         if is_multi_stage {
-            let placeholder_eos = 0u32;
-
-            self.engine
-                .start_generation(
-                    req.pipeline_id,
-                    &inference_request,
-                    placeholder_eos,
-                    0,
-                    None,
-                )
+            self.state
+                .register_multi_stage_request(inference_request.request_id)
                 .await?;
         }
 

@@ -1,12 +1,82 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
-use rig_core::{Activation, Assignment, LoadedPartition, Partition, Tokenizer};
+use rig_core::{
+    Activation, Assignment, GenerationDecision, GenerationParams, LoadedPartition, Partition,
+    RequestId, StopReasonProto, Tokenizer,
+};
+use rig_inference::{Sampler, StopChecker, StopReason};
 use tokio::sync::{Mutex, broadcast};
 use tracing::{debug, info, instrument, warn};
 
 use crate::coordinator_client::CoordinatorClient;
 use crate::error::WorkerError;
 use crate::peer_connection::PeerConnection;
+
+struct MultiStageGenerationState {
+    sampler: Sampler,
+    stop_checker: StopChecker,
+    generated_tokens: Vec<u32>,
+    prompt_tokens: usize,
+    start_time: Instant,
+    time_to_first_token_ms: Option<u64>,
+}
+
+impl MultiStageGenerationState {
+    fn new(
+        params: &GenerationParams,
+        eos_token: u32,
+        prompt_tokens: usize,
+        seed: Option<u64>,
+    ) -> Self {
+        let sampler = Sampler::new(params, seed);
+        let stop_checker = StopChecker::new(eos_token, params.max_tokens);
+
+        Self {
+            sampler,
+            stop_checker,
+            generated_tokens: Vec::new(),
+            prompt_tokens,
+            start_time: Instant::now(),
+            time_to_first_token_ms: None,
+        }
+    }
+
+    fn sample_and_check(&mut self, logits: &[f32]) -> GenerationDecision {
+        let token = self.sampler.sample(logits);
+        self.generated_tokens.push(token);
+
+        if self.time_to_first_token_ms.is_none() {
+            #[allow(clippy::cast_possible_truncation)]
+            let ttft = self.start_time.elapsed().as_millis() as u64;
+            self.time_to_first_token_ms = Some(ttft);
+        }
+
+        let stop_reason = self.stop_checker.should_stop(&self.generated_tokens);
+
+        if stop_reason.is_stopped() {
+            GenerationDecision::Finish {
+                generated_tokens: self.generated_tokens.clone(),
+                stop_reason: Self::convert_stop_reason(stop_reason),
+                time_to_first_token_ms: self.time_to_first_token_ms.unwrap_or(0),
+            }
+        } else {
+            #[allow(clippy::cast_possible_truncation)]
+            let position = (self.prompt_tokens + self.generated_tokens.len()) as u32;
+            GenerationDecision::Continue { token, position }
+        }
+    }
+
+    fn convert_stop_reason(reason: StopReason) -> StopReasonProto {
+        match reason {
+            StopReason::MaxTokens => StopReasonProto::MaxTokens,
+            StopReason::EosToken => StopReasonProto::EosToken,
+            StopReason::StopSequence(seq) => StopReasonProto::StopSequence(seq),
+            StopReason::NotStopped => StopReasonProto::MaxTokens,
+        }
+    }
+}
 
 pub struct PipelineStage {
     partition: Box<dyn Partition>,
@@ -15,6 +85,7 @@ pub struct PipelineStage {
     prev_peer: Option<PeerConnection>,
     next_peer: Option<PeerConnection>,
     coord_client: Option<Arc<Mutex<CoordinatorClient>>>,
+    generation_states: HashMap<RequestId, MultiStageGenerationState>,
 }
 
 impl PipelineStage {
@@ -33,6 +104,7 @@ impl PipelineStage {
             prev_peer,
             next_peer,
             coord_client: None,
+            generation_states: HashMap::new(),
         }
     }
 
@@ -51,6 +123,7 @@ impl PipelineStage {
             prev_peer,
             next_peer,
             coord_client: None,
+            generation_states: HashMap::new(),
         }
     }
 
@@ -154,11 +227,29 @@ impl PipelineStage {
         activation: Activation,
     ) -> Result<(), WorkerError> {
         let request_id = activation.metadata.request_id;
-
         let eos_token = self.tokenizer().map_or(2, Tokenizer::eos_token);
 
-        let output = self.forward(activation)?;
+        if !self.generation_states.contains_key(&request_id) {
+            let params = activation
+                .metadata
+                .generation_params
+                .clone()
+                .unwrap_or_default();
 
+            let prompt_tokens = activation.metadata.positions.len();
+
+            let state = MultiStageGenerationState::new(&params, eos_token, prompt_tokens, None);
+            self.generation_states.insert(request_id, state);
+
+            debug!(
+                %request_id,
+                prompt_tokens,
+                eos_token,
+                "Initialized generation state for request"
+            );
+        }
+
+        let output = self.forward(activation)?;
         let logits = extract_logits(&output);
 
         if logits.is_empty() {
@@ -167,10 +258,19 @@ impl PipelineStage {
             ));
         }
 
+        let state = self.generation_states.get_mut(&request_id).ok_or_else(|| {
+            WorkerError::partition_processing("Generation state not found for request")
+        })?;
+
+        let decision = state.sample_and_check(&logits);
+
+        let is_finished = matches!(decision, GenerationDecision::Finish { .. });
+
         debug!(
             %request_id,
             logits_len = logits.len(),
-            "Multi-stage last stage: sending logits to coordinator"
+            is_finished,
+            "Multi-stage last stage: sampled token locally"
         );
 
         let coord_client = self.coord_client.as_ref().ok_or_else(|| {
@@ -182,10 +282,15 @@ impl PipelineStage {
         coord_client
             .lock()
             .await
-            .send_logits(request_id, logits, eos_token)
+            .send_generation_decision(request_id, decision)
             .await?;
 
-        debug!(%request_id, "Logits sent to coordinator");
+        if is_finished {
+            self.generation_states.remove(&request_id);
+            debug!(%request_id, "Cleaned up generation state after completion");
+        }
+
+        debug!(%request_id, "Generation decision sent to coordinator");
         Ok(())
     }
 
@@ -231,7 +336,7 @@ impl PipelineStage {
                             if self.is_multi_stage_last() {
                                 debug!(
                                     request_id = %activation.metadata.request_id,
-                                    "Multi-stage last stage: forwarding and sending logits"
+                                    "Multi-stage last stage: processing and sampling locally"
                                 );
                                 self.process_multi_stage_last(activation).await?;
                             } else {

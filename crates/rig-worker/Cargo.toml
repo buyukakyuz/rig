@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 rig-core.workspace = true
+rig-inference.workspace = true
 rig-runtime-candle.workspace = true
 rig-transport-tcp.workspace = true
 rig-message-bincode.workspace = true

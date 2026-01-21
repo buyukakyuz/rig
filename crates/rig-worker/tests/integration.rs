@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rig_coordinator::handler::ConnectionHandler;
-use rig_coordinator::{CoordinatorConfig, CoordinatorServer, CoordinatorState, InferenceEngine};
+use rig_coordinator::{CoordinatorConfig, CoordinatorServer, CoordinatorState};
 use rig_core::{Address, DType, ModelId, NodeId, PipelineConfig};
 use rig_worker::CoordinatorClient;
 
@@ -38,19 +38,12 @@ impl TestCoordinator {
 
             let _ = addr_tx.send(addr);
 
-            let engine = Arc::new(InferenceEngine::new(state_clone.clone()));
-
             loop {
                 let Ok((transport, peer_addr)) = listener.accept_with_socket_addr().await else {
                     break;
                 };
 
-                let handler = ConnectionHandler::new(
-                    state_clone.clone(),
-                    engine.clone(),
-                    transport,
-                    peer_addr,
-                );
+                let handler = ConnectionHandler::new(state_clone.clone(), transport, peer_addr);
 
                 tokio::spawn(async move {
                     let _ = handler.run().await;

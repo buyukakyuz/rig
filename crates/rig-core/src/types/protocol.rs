@@ -8,6 +8,36 @@ use crate::types::pipeline::{Assignment, PipelineConfig};
 use crate::types::request::{GenerationParams, InferenceInput, InferenceRequest, UsageStats};
 use crate::types::tensor::DType;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StopReasonProto {
+    MaxTokens,
+    EosToken,
+    StopSequence(String),
+}
+
+impl std::fmt::Display for StopReasonProto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MaxTokens => write!(f, "max tokens reached"),
+            Self::EosToken => write!(f, "EOS token generated"),
+            Self::StopSequence(seq) => write!(f, "stop sequence: {seq}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GenerationDecision {
+    Continue {
+        token: u32,
+        position: u32,
+    },
+    Finish {
+        generated_tokens: Vec<u32>,
+        stop_reason: StopReasonProto,
+        time_to_first_token_ms: u64,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerMessage {
     Register(RegisterRequest),
@@ -20,10 +50,9 @@ pub enum WorkerMessage {
     GetPendingRequest {
         pipeline_id: PipelineId,
     },
-    ReturnLogits {
+    ReturnGenerationDecision {
         request_id: RequestId,
-        logits: Vec<f32>,
-        eos_token: u32,
+        decision: GenerationDecision,
     },
     TokenGenerated {
         request_id: RequestId,

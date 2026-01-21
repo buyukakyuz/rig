@@ -1,7 +1,8 @@
 use rig_core::{
     Address, Assignment, Codec, CoordinatorIncoming, CoordinatorMessage, CoordinatorOutgoing,
-    FramedTransport, HeartbeatRequest, InferenceRequest, ModelInfo, NodeId, NodeInfo, NodeStatus,
-    PipelineId, RegisterRequest, RequestId, TransportFactory, UsageStats, WorkerMessage,
+    FramedTransport, GenerationDecision, HeartbeatRequest, InferenceRequest, ModelInfo, NodeId,
+    NodeInfo, NodeStatus, PipelineId, RegisterRequest, RequestId, TransportFactory, UsageStats,
+    WorkerMessage,
 };
 use rig_message_bincode::BincodeCodec;
 use rig_transport_tcp::{TcpConfig, TcpTransport, TcpTransportFactory};
@@ -210,20 +211,18 @@ impl CoordinatorClient {
         }
     }
 
-    pub async fn send_logits(
+    pub async fn send_generation_decision(
         &mut self,
         request_id: RequestId,
-        logits: Vec<f32>,
-        eos_token: u32,
+        decision: GenerationDecision,
     ) -> Result<(), WorkerError> {
         if !self.is_registered() {
             return Err(WorkerError::NotRegistered);
         }
 
-        self.send(&WorkerMessage::ReturnLogits {
+        self.send(&WorkerMessage::ReturnGenerationDecision {
             request_id,
-            logits,
-            eos_token,
+            decision,
         })
         .await?;
 
