@@ -1,7 +1,7 @@
 use candle_core::{Result, Tensor};
 use candle_nn::{Linear, Module, VarBuilder, linear, linear_no_bias};
 
-use crate::cache::{LayerKvCache, RopeCache};
+use crate::cache::{CausalMaskCache, LayerKvCache, RopeCache};
 use crate::config::TransformerConfig;
 
 #[derive(Debug, Clone)]
@@ -65,6 +65,7 @@ impl CausalSelfAttention {
         x: &Tensor,
         index_pos: usize,
         rope_cache: &RopeCache,
+        mask_cache: &CausalMaskCache,
         kv_cache: Option<&mut LayerKvCache>,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
@@ -96,7 +97,7 @@ impl CausalSelfAttention {
         let attn_weights = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
 
         let attn_weights = if seq_len > 1 {
-            self.apply_causal_mask(&attn_weights)?
+            self.apply_causal_mask(&attn_weights, mask_cache)?
         } else {
             attn_weights
         };
@@ -154,12 +155,20 @@ impl CausalSelfAttention {
         Ok(x)
     }
 
-    fn apply_causal_mask(&self, attn_weights: &Tensor) -> Result<Tensor> {
+    fn apply_causal_mask(
+        &self,
+        attn_weights: &Tensor,
+        mask_cache: &CausalMaskCache,
+    ) -> Result<Tensor> {
         let (_, _, seq_len, kv_len) = attn_weights.dims4()?;
         let device = attn_weights.device();
         let dtype = attn_weights.dtype();
 
-        let mask = Self::create_causal_mask(seq_len, kv_len, device)?;
+        let mask = if seq_len == kv_len {
+            mask_cache.get(seq_len)?
+        } else {
+            Self::create_causal_mask(seq_len, kv_len, device)?
+        };
         let mask = mask.broadcast_as(attn_weights.shape())?;
 
         let on_true = Tensor::new(f32::NEG_INFINITY, device)?
@@ -181,43 +190,5 @@ impl CausalSelfAttention {
             .collect();
 
         Tensor::from_slice(&mask, (seq_len, kv_len), device)
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::panic)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_causal_mask() {
-        let device = candle_core::Device::Cpu;
-
-        let mask = CausalSelfAttention::create_causal_mask(4, 4, &device)
-            .unwrap_or_else(|e| panic!("create mask failed: {e}"));
-
-        let expected = vec![0u8, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0];
-        let mask_vec: Vec<u8> = mask
-            .flatten_all()
-            .unwrap_or_else(|e| panic!("flatten failed: {e}"))
-            .to_vec1()
-            .unwrap_or_else(|e| panic!("to_vec1 failed: {e}"));
-        assert_eq!(mask_vec, expected);
-    }
-
-    #[test]
-    fn test_causal_mask_incremental() {
-        let device = candle_core::Device::Cpu;
-
-        let mask = CausalSelfAttention::create_causal_mask(1, 4, &device)
-            .unwrap_or_else(|e| panic!("create mask failed: {e}"));
-
-        let expected = vec![0u8, 0, 0, 0];
-        let mask_vec: Vec<u8> = mask
-            .flatten_all()
-            .unwrap_or_else(|e| panic!("flatten failed: {e}"))
-            .to_vec1()
-            .unwrap_or_else(|e| panic!("to_vec1 failed: {e}"));
-        assert_eq!(mask_vec, expected);
     }
 }

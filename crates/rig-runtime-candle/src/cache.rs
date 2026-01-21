@@ -3,6 +3,39 @@ use candle_core::{DType, Device, Result, Tensor};
 use crate::config::TransformerConfig;
 
 #[derive(Debug, Clone)]
+pub struct CausalMaskCache {
+    mask: Tensor,
+    max_seq_len: usize,
+}
+
+impl CausalMaskCache {
+    pub fn new(max_seq_len: usize, device: &Device) -> Result<Self> {
+        let mask: Vec<u8> = (0..max_seq_len)
+            .flat_map(|i| (0..max_seq_len).map(move |j| u8::from(j > i)))
+            .collect();
+
+        let mask = Tensor::from_slice(&mask, (max_seq_len, max_seq_len), device)?;
+
+        Ok(Self { mask, max_seq_len })
+    }
+
+    pub fn get(&self, seq_len: usize) -> Result<Tensor> {
+        if seq_len > self.max_seq_len {
+            return Err(candle_core::Error::Msg(format!(
+                "Sequence length {seq_len} exceeds max {}",
+                self.max_seq_len
+            )));
+        }
+        self.mask.narrow(0, 0, seq_len)?.narrow(1, 0, seq_len)
+    }
+
+    #[must_use]
+    pub const fn max_seq_len(&self) -> usize {
+        self.max_seq_len
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct RopeCache {
     cos: Tensor,
     sin: Tensor,
@@ -232,5 +265,36 @@ mod tests {
             .unwrap_or_else(|e| panic!("update failed: {e}"));
         assert_eq!(k.dims(), &[1, 4, 12, 32]);
         assert_eq!(v.dims(), &[1, 4, 12, 32]);
+    }
+
+    #[test]
+    fn test_causal_mask_cache_prefill() {
+        let device = Device::Cpu;
+        let cache = CausalMaskCache::new(16, &device)
+            .unwrap_or_else(|e| panic!("Failed to create mask cache: {e}"));
+
+        let mask = cache
+            .get(4)
+            .unwrap_or_else(|e| panic!("Failed to get mask: {e}"));
+        assert_eq!(mask.dims(), &[4, 4]);
+
+        let expected = vec![0u8, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0];
+        let mask_vec: Vec<u8> = mask
+            .flatten_all()
+            .unwrap_or_else(|e| panic!("flatten failed: {e}"))
+            .to_vec1()
+            .unwrap_or_else(|e| panic!("to_vec1 failed: {e}"));
+        assert_eq!(mask_vec, expected);
+    }
+
+    #[test]
+    fn test_causal_mask_cache_bounds() {
+        let device = Device::Cpu;
+        let cache = CausalMaskCache::new(8, &device)
+            .unwrap_or_else(|e| panic!("Failed to create mask cache: {e}"));
+
+        assert!(cache.get(8).is_ok());
+
+        assert!(cache.get(9).is_err());
     }
 }

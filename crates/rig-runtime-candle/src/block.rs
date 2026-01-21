@@ -2,7 +2,7 @@ use candle_core::{Module, Result, Tensor};
 use candle_nn::{RmsNorm, VarBuilder, rms_norm};
 
 use crate::attention::CausalSelfAttention;
-use crate::cache::{LayerKvCache, RopeCache};
+use crate::cache::{CausalMaskCache, LayerKvCache, RopeCache};
 use crate::config::TransformerConfig;
 use crate::mlp::Mlp;
 
@@ -53,6 +53,7 @@ impl TransformerBlock {
         x: &Tensor,
         index_pos: usize,
         rope_cache: &RopeCache,
+        mask_cache: &CausalMaskCache,
         kv_cache: Option<&mut LayerKvCache>,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
@@ -61,7 +62,7 @@ impl TransformerBlock {
         let x = self.input_layernorm.forward(x)?;
         let x = self
             .self_attn
-            .forward(&x, index_pos, rope_cache, kv_cache)?;
+            .forward(&x, index_pos, rope_cache, mask_cache, kv_cache)?;
         let x = (residual + x)?;
 
         let residual = &x;
@@ -102,6 +103,8 @@ mod tests {
 
         let rope_cache = RopeCache::new(&config, dtype, &device)
             .unwrap_or_else(|e| panic!("Failed to create RoPE cache: {e}"));
+        let mask_cache = CausalMaskCache::new(config.max_position_embeddings, &device)
+            .unwrap_or_else(|e| panic!("Failed to create mask cache: {e}"));
 
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
@@ -113,7 +116,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("Failed to create input: {e}"));
 
         let output = block
-            .forward(&input, 0, &rope_cache, None)
+            .forward(&input, 0, &rope_cache, &mask_cache, None)
             .unwrap_or_else(|e| panic!("Forward failed: {e}"));
 
         assert_eq!(output.dims(), &[2, 8, 64]);
