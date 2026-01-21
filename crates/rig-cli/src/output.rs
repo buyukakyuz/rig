@@ -83,8 +83,6 @@ pub struct StageOutput {
     pub ready: bool,
 }
 
-// Benchmark output types
-
 #[derive(Serialize)]
 pub struct BenchmarkOutput {
     pub metadata: BenchmarkMetadata,

@@ -24,6 +24,7 @@ minijinja = { workspace = true }
 
 sysinfo = "0.32"
 cudarc = { version = "0.12", optional = true }
+metal = { version = "0.27", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -33,7 +34,7 @@ half = "2.4"
 [features]
 default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "dep:cudarc"]
-metal = ["candle-core/metal", "candle-nn/metal"]
+metal = ["candle-core/metal", "candle-nn/metal", "dep:metal"]
 
 [lints]
 workspace = true

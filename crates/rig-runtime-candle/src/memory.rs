@@ -33,13 +33,15 @@ fn query_cuda_memory() -> Result<(u64, u64), CandleError> {
 
 #[cfg(feature = "metal")]
 fn query_metal_memory() -> (u64, u64) {
-    use sysinfo::System;
+    let Some(device) = metal::Device::system_default() else {
+        return (0, 0);
+    };
 
-    let sys = System::new_all();
-    let total_ram = sys.total_memory();
+    let total = device.recommended_max_working_set_size();
+    let allocated = device.current_allocated_size();
+    let free = total.saturating_sub(allocated);
 
-    let available = (total_ram as f64 * 0.75) as u64;
-    (available, available)
+    (free, total)
 }
 
 #[cfg(test)]
