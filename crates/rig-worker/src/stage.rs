@@ -159,9 +159,10 @@ impl PipelineStage {
             ));
         }
 
-        let decode_tokens = |partition: &dyn Partition, tokens: &[u32]| -> Option<String> {
-            partition.tokenizer().and_then(|t| t.decode(tokens).ok())
-        };
+        let mut decode_stream = self
+            .partition
+            .tokenizer()
+            .and_then(|t| t.create_decode_stream(true).ok());
 
         let first_token = sampler.sample(&logits);
         let mut generated_tokens = vec![first_token];
@@ -171,12 +172,11 @@ impl PipelineStage {
 
         let mut current_decoded_text = String::new();
 
-        if let Some(decoded_text) = decode_tokens(self.partition.as_ref(), &generated_tokens) {
-            let new_text = &decoded_text[current_decoded_text.len()..];
-            if !new_text.is_empty() {
-                let _ = token_tx.send(new_text.to_string());
+        if let Some(ref mut stream) = decode_stream {
+            if let Ok(Some(new_text)) = stream.step(first_token) {
+                current_decoded_text.push_str(&new_text);
+                let _ = token_tx.send(new_text);
             }
-            current_decoded_text = decoded_text;
         }
 
         while stop_checker
@@ -202,12 +202,11 @@ impl PipelineStage {
             let token = sampler.sample(&logits);
             generated_tokens.push(token);
 
-            if let Some(decoded_text) = decode_tokens(self.partition.as_ref(), &generated_tokens) {
-                let new_text = &decoded_text[current_decoded_text.len()..];
-                if !new_text.is_empty() {
-                    let _ = token_tx.send(new_text.to_string());
+            if let Some(ref mut stream) = decode_stream {
+                if let Ok(Some(new_text)) = stream.step(token) {
+                    current_decoded_text.push_str(&new_text);
+                    let _ = token_tx.send(new_text);
                 }
-                current_decoded_text = decoded_text;
             }
 
             if generated_tokens.len() % 10 == 0 {

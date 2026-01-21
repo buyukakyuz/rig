@@ -544,8 +544,11 @@ impl WorkerNode {
         )
         .await?;
 
-        let mut streaming_tokens: Vec<u32> = Vec::new();
-        let mut current_decoded_text = String::new();
+        let mut decode_stream = self
+            .stage
+            .as_ref()
+            .and_then(|s| s.partition().tokenizer())
+            .and_then(|t| t.create_decode_stream(true).ok());
 
         loop {
             let client = self
@@ -563,21 +566,13 @@ impl WorkerNode {
                 } => {
                     debug!(%request_id, %token, %position, "Continuing generation");
 
-                    streaming_tokens.push(token);
-
-                    let stage = self.stage.as_ref().ok_or(WorkerError::NoAssignment)?;
-                    if let Some(tokenizer) = stage.partition().tokenizer()
-                        && let Ok(decoded_text) = tokenizer.decode(&streaming_tokens)
-                    {
-                        let new_text = &decoded_text[current_decoded_text.len()..];
-                        if !new_text.is_empty()
-                            && let Err(e) = streaming_client
-                                .send_token(request_id, new_text.to_string())
-                                .await
-                        {
-                            warn!(%request_id, error = %e, "Failed to stream token");
+                    if let Some(ref mut stream) = decode_stream {
+                        if let Ok(Some(new_text)) = stream.step(token) {
+                            if let Err(e) = streaming_client.send_token(request_id, new_text).await
+                            {
+                                warn!(%request_id, error = %e, "Failed to stream token");
+                            }
                         }
-                        current_decoded_text = decoded_text;
                     }
 
                     let activation = create_decode_activation(request_id, token, position);

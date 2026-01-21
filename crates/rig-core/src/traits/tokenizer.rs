@@ -1,5 +1,10 @@
 use crate::error::TokenizerError;
 
+pub trait TokenDecodeStream: Send {
+    fn step(&mut self, token_id: u32) -> Result<Option<String>, TokenizerError>;
+    fn flush(&mut self) -> Result<Option<String>, TokenizerError>;
+}
+
 pub trait Tokenizer: Send + Sync {
     fn encode(&self, text: &str, add_bos: bool) -> Result<Vec<u32>, TokenizerError>;
     fn decode(&self, tokens: &[u32]) -> Result<String, TokenizerError>;
@@ -32,5 +37,15 @@ pub trait Tokenizer: Send + Sync {
             .iter()
             .map(|tokens| self.decode(tokens))
             .collect()
+    }
+
+    fn create_decode_stream(
+        &self,
+        skip_special_tokens: bool,
+    ) -> Result<Box<dyn TokenDecodeStream>, TokenizerError> {
+        let _ = skip_special_tokens;
+        Err(TokenizerError::DecodeFailed(
+            "Incremental decoding not supported by this tokenizer".into(),
+        ))
     }
 }

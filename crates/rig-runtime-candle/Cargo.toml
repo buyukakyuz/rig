@@ -19,8 +19,9 @@ serde = { workspace = true }
 serde_json = "1.0"
 half = "2.4"
 bytemuck = { version = "1.18", features = ["derive"] }
-tokenizers = "0.20"
+tokenizers = { git = "https://github.com/huggingface/tokenizers", branch = "main" }
 minijinja = { workspace = true }
+ouroboros = "0.18"
 
 sysinfo = "0.32"
 cudarc = { version = "0.12", optional = true }

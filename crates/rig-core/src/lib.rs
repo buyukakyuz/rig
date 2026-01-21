@@ -11,8 +11,8 @@ pub use error::{
 
 pub use traits::{
     ByteTransport, ClusterMembership, Codec, FramedTransport, HealthReporter, KvCache,
-    LatencyClass, Listener, Partition, PeerDiscovery, Runtime, Tokenizer, TransportCharacteristics,
-    TransportFactory, WorkCoordination,
+    LatencyClass, Listener, Partition, PeerDiscovery, Runtime, TokenDecodeStream, Tokenizer,
+    TransportCharacteristics, TransportFactory, WorkCoordination,
 };
 
 pub use sampling::Sampler;
