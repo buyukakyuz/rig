@@ -19,4 +19,18 @@ pub trait Tokenizer: Send + Sync {
     fn supports_chat_template(&self) -> bool {
         false
     }
+
+    fn encode_batch(&self, texts: &[&str], add_bos: bool) -> Result<Vec<Vec<u32>>, TokenizerError> {
+        texts
+            .iter()
+            .map(|text| self.encode(text, add_bos))
+            .collect()
+    }
+
+    fn decode_batch(&self, token_sequences: &[&[u32]]) -> Result<Vec<String>, TokenizerError> {
+        token_sequences
+            .iter()
+            .map(|tokens| self.decode(tokens))
+            .collect()
+    }
 }

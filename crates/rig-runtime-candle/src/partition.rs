@@ -500,6 +500,29 @@ impl CandlePartition {
             .decode(tokens, true)
             .map_err(|e| CandleError::TokenizationFailed(e.to_string()))
     }
+
+    pub fn tokenize_batch(&self, texts: &[&str], add_bos: bool) -> Result<Vec<Vec<u32>>> {
+        let encodings = self
+            .tokenizer
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|e| CandleError::TokenizationFailed(e.to_string()))?;
+
+        let mut results = Vec::with_capacity(encodings.len());
+        for encoding in encodings {
+            let mut ids: Vec<u32> = encoding.get_ids().to_vec();
+            if add_bos && self.add_bos_token {
+                ids.insert(0, self.bos_token());
+            }
+            results.push(ids);
+        }
+        Ok(results)
+    }
+
+    pub fn detokenize_batch(&self, token_sequences: &[&[u32]]) -> Result<Vec<String>> {
+        self.tokenizer
+            .decode_batch(token_sequences, true)
+            .map_err(|e| CandleError::TokenizationFailed(e.to_string()))
+    }
 }
 
 impl rig_core::Partition for CandlePartition {
@@ -614,6 +637,23 @@ impl rig_core::Tokenizer for CandlePartition {
 
     fn supports_chat_template(&self) -> bool {
         self.chat_template.is_some()
+    }
+
+    fn encode_batch(
+        &self,
+        texts: &[&str],
+        add_bos: bool,
+    ) -> std::result::Result<Vec<Vec<u32>>, rig_core::TokenizerError> {
+        self.tokenize_batch(texts, add_bos)
+            .map_err(|e| rig_core::TokenizerError::EncodeFailed(e.to_string()))
+    }
+
+    fn decode_batch(
+        &self,
+        token_sequences: &[&[u32]],
+    ) -> std::result::Result<Vec<String>, rig_core::TokenizerError> {
+        self.detokenize_batch(token_sequences)
+            .map_err(|e| rig_core::TokenizerError::DecodeFailed(e.to_string()))
     }
 }
 
