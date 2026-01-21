@@ -43,9 +43,9 @@ def format_change_inverse(baseline: float, new: float) -> str:
     if abs(change) < 1:
         return f"{change:+.1f}%"
     elif change < 0:
-        return f"{change:+.1f}% faster"
+        return f"{abs(change):.1f}% faster"
     else:
-        return f"{change:+.1f}% slower"
+        return f"{abs(change):.1f}% slower"
 
 
 def compare_benchmarks(baseline_path: Path, new_path: Path) -> int:
@@ -75,7 +75,7 @@ def compare_benchmarks(baseline_path: Path, new_path: Path) -> int:
     print(f"  Time:   {format_timestamp(new['metadata']['timestamp'])}")
     print()
 
-    if baseline['metadata']['device'] != new['metadata']['device']:
+    if baseline["metadata"]["device"] != new["metadata"]["device"]:
         print("WARNING: Different devices - comparison may not be meaningful")
         print()
 
@@ -83,23 +83,29 @@ def compare_benchmarks(baseline_path: Path, new_path: Path) -> int:
     print("SUMMARY")
     print("-" * 70)
 
-    b_summary = baseline['summary']
-    n_summary = new['summary']
+    b_summary = baseline["summary"]
+    n_summary = new["summary"]
 
     print(f"{'Metric':<25} {'Baseline':>12} {'New':>12} {'Change':>20}")
     print("-" * 70)
 
-    print(f"{'Peak Prefill (tok/s)':<25} {b_summary['peak_prefill_tok_s']:>12.1f} {n_summary['peak_prefill_tok_s']:>12.1f} {format_change(b_summary['peak_prefill_tok_s'], n_summary['peak_prefill_tok_s']):>20}")
-    print(f"{'Peak Decode (tok/s)':<25} {b_summary['peak_decode_tok_s']:>12.1f} {n_summary['peak_decode_tok_s']:>12.1f} {format_change(b_summary['peak_decode_tok_s'], n_summary['peak_decode_tok_s']):>20}")
-    print(f"{'Min TTFT (ms)':<25} {b_summary['min_ttft_ms']:>12.1f} {n_summary['min_ttft_ms']:>12.1f} {format_change_inverse(b_summary['min_ttft_ms'], n_summary['min_ttft_ms']):>20}")
+    print(
+        f"{'Peak Prefill (tok/s)':<25} {b_summary['peak_prefill_tok_s']:>12.1f} {n_summary['peak_prefill_tok_s']:>12.1f} {format_change(b_summary['peak_prefill_tok_s'], n_summary['peak_prefill_tok_s']):>20}"
+    )
+    print(
+        f"{'Peak Decode (tok/s)':<25} {b_summary['peak_decode_tok_s']:>12.1f} {n_summary['peak_decode_tok_s']:>12.1f} {format_change(b_summary['peak_decode_tok_s'], n_summary['peak_decode_tok_s']):>20}"
+    )
+    print(
+        f"{'Min TTFT (ms)':<25} {b_summary['min_ttft_ms']:>12.1f} {n_summary['min_ttft_ms']:>12.1f} {format_change_inverse(b_summary['min_ttft_ms'], n_summary['min_ttft_ms']):>20}"
+    )
     print()
 
     print("-" * 70)
     print("PER PROMPT SIZE")
     print("-" * 70)
 
-    baseline_by_size = {r['prompt_tokens']: r for r in baseline['results']}
-    new_by_size = {r['prompt_tokens']: r for r in new['results']}
+    baseline_by_size = {r["prompt_tokens"]: r for r in baseline["results"]}
+    new_by_size = {r["prompt_tokens"]: r for r in new["results"]}
 
     all_sizes = sorted(set(baseline_by_size.keys()) | set(new_by_size.keys()))
 
@@ -111,12 +117,14 @@ def compare_benchmarks(baseline_path: Path, new_path: Path) -> int:
             print(f"\nPrompt size {size}: SKIPPED (not in both benchmarks)")
             continue
 
-        b_agg = b_result['aggregated']
-        n_agg = n_result['aggregated']
-        b_runs = len(b_result['runs'])
-        n_runs = len(n_result['runs'])
+        b_agg = b_result["aggregated"]
+        n_agg = n_result["aggregated"]
+        b_runs = len(b_result["runs"])
+        n_runs = len(n_result["runs"])
 
-        print(f"\nPrompt size: {size} tokens (baseline: {b_runs} runs, new: {n_runs} runs)")
+        print(
+            f"\nPrompt size: {size} tokens (baseline: {b_runs} runs, new: {n_runs} runs)"
+        )
         print(f"  {'Metric':<23} {'Baseline':>14} {'New':>14} {'Change':>18}")
         print(f"  {'-' * 71}")
 
@@ -125,10 +133,18 @@ def compare_benchmarks(baseline_path: Path, new_path: Path) -> int:
                 return f"{mean:>7.1f} ±{std:>4.1f}"
             return f"{mean:>14.1f}"
 
-        print(f"  {'Prefill (tok/s)':<23} {fmt_with_std(b_agg['mean_prefill_tok_s'], b_agg['std_prefill_tok_s'], b_runs):>14} {fmt_with_std(n_agg['mean_prefill_tok_s'], n_agg['std_prefill_tok_s'], n_runs):>14} {format_change(b_agg['mean_prefill_tok_s'], n_agg['mean_prefill_tok_s']):>18}")
-        print(f"  {'Decode (tok/s)':<23} {fmt_with_std(b_agg['mean_decode_tok_s'], b_agg['std_decode_tok_s'], b_runs):>14} {fmt_with_std(n_agg['mean_decode_tok_s'], n_agg['std_decode_tok_s'], n_runs):>14} {format_change(b_agg['mean_decode_tok_s'], n_agg['mean_decode_tok_s']):>18}")
-        print(f"  {'TTFT (ms)':<23} {fmt_with_std(b_agg['mean_ttft_ms'], b_agg['std_ttft_ms'], b_runs):>14} {fmt_with_std(n_agg['mean_ttft_ms'], n_agg['std_ttft_ms'], n_runs):>14} {format_change_inverse(b_agg['mean_ttft_ms'], n_agg['mean_ttft_ms']):>18}")
-        print(f"  {'Total time (ms)':<23} {fmt_with_std(b_agg['mean_total_time_ms'], 0, b_runs):>14} {fmt_with_std(n_agg['mean_total_time_ms'], 0, n_runs):>14} {format_change_inverse(b_agg['mean_total_time_ms'], n_agg['mean_total_time_ms']):>18}")
+        print(
+            f"  {'Prefill (tok/s)':<23} {fmt_with_std(b_agg['mean_prefill_tok_s'], b_agg['std_prefill_tok_s'], b_runs):>14} {fmt_with_std(n_agg['mean_prefill_tok_s'], n_agg['std_prefill_tok_s'], n_runs):>14} {format_change(b_agg['mean_prefill_tok_s'], n_agg['mean_prefill_tok_s']):>18}"
+        )
+        print(
+            f"  {'Decode (tok/s)':<23} {fmt_with_std(b_agg['mean_decode_tok_s'], b_agg['std_decode_tok_s'], b_runs):>14} {fmt_with_std(n_agg['mean_decode_tok_s'], n_agg['std_decode_tok_s'], n_runs):>14} {format_change(b_agg['mean_decode_tok_s'], n_agg['mean_decode_tok_s']):>18}"
+        )
+        print(
+            f"  {'TTFT (ms)':<23} {fmt_with_std(b_agg['mean_ttft_ms'], b_agg['std_ttft_ms'], b_runs):>14} {fmt_with_std(n_agg['mean_ttft_ms'], n_agg['std_ttft_ms'], n_runs):>14} {format_change_inverse(b_agg['mean_ttft_ms'], n_agg['mean_ttft_ms']):>18}"
+        )
+        print(
+            f"  {'Total time (ms)':<23} {fmt_with_std(b_agg['mean_total_time_ms'], 0, b_runs):>14} {fmt_with_std(n_agg['mean_total_time_ms'], 0, n_runs):>14} {format_change_inverse(b_agg['mean_total_time_ms'], n_agg['mean_total_time_ms']):>18}"
+        )
 
     print()
     print("=" * 70)
@@ -142,7 +158,7 @@ def main() -> int:
         epilog="""
 Examples:
     python bench/compare.py .benchmarks/baseline.json .benchmarks/optimized.json
-        """
+        """,
     )
     parser.add_argument("baseline", type=Path, help="Baseline benchmark JSON file")
     parser.add_argument("new", type=Path, help="New benchmark JSON file to compare")
