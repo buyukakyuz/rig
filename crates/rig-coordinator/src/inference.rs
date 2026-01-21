@@ -368,8 +368,13 @@ mod tests {
             .unwrap();
 
         match decision {
-            GenerationDecision::Finish { reason, .. } => {
+            GenerationDecision::Finish {
+                reason,
+                time_to_first_token_ms,
+                ..
+            } => {
                 assert_eq!(reason, StopReason::EosToken);
+                let _ = time_to_first_token_ms;
             }
             GenerationDecision::Continue { .. } => panic!("Expected Finish due to EOS"),
         }
@@ -403,13 +408,19 @@ mod tests {
             if i < 2 {
                 assert!(matches!(decision, GenerationDecision::Continue { .. }));
             } else {
-                assert!(matches!(
-                    decision,
+                match decision {
                     GenerationDecision::Finish {
-                        reason: StopReason::MaxTokens,
+                        reason,
+                        time_to_first_token_ms,
                         ..
+                    } => {
+                        assert_eq!(reason, StopReason::MaxTokens);
+                        let _ = time_to_first_token_ms;
                     }
-                ));
+                    GenerationDecision::Continue { .. } => {
+                        panic!("Expected Finish due to MaxTokens")
+                    }
+                }
             }
         }
     }
