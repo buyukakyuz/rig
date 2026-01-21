@@ -2,7 +2,7 @@ use candle_core::{Module, Result, Tensor};
 use candle_nn::{RmsNorm, VarBuilder, rms_norm};
 
 use crate::attention::CausalSelfAttention;
-use crate::cache::{CausalMaskCache, LayerKvCache, RopeCache};
+use crate::cache::{LayerKvCache, RopeCache};
 use crate::config::TransformerConfig;
 use crate::mlp::Mlp;
 
@@ -53,7 +53,6 @@ impl TransformerBlock {
         x: &Tensor,
         index_pos: usize,
         rope_cache: &RopeCache,
-        mask_cache: &CausalMaskCache,
         kv_cache: Option<&mut LayerKvCache>,
         max_seq_len: usize,
     ) -> Result<Tensor> {
@@ -61,9 +60,9 @@ impl TransformerBlock {
 
         let residual = x;
         let x = self.input_layernorm.forward(x)?;
-        let x =
-            self.self_attn
-                .forward(&x, index_pos, rope_cache, mask_cache, kv_cache, max_seq_len)?;
+        let x = self
+            .self_attn
+            .forward(&x, index_pos, rope_cache, kv_cache, max_seq_len)?;
         let x = (residual + x)?;
 
         let residual = &x;
@@ -82,13 +81,14 @@ mod tests {
     use candle_nn::VarMap;
 
     #[test]
+    #[cfg(feature = "metal")]
     fn test_block_shapes() {
-        let device = Device::Cpu;
+        let device = Device::new_metal(0).expect("Metal device required for SDPA");
         let dtype = DType::F32;
 
         let config = TransformerConfig {
-            hidden_size: 64,
-            intermediate_size: 128,
+            hidden_size: 256,
+            intermediate_size: 512,
             num_hidden_layers: 1,
             num_attention_heads: 4,
             num_key_value_heads: Some(4),
@@ -104,8 +104,6 @@ mod tests {
 
         let rope_cache = RopeCache::new(&config, dtype, &device)
             .unwrap_or_else(|e| panic!("Failed to create RoPE cache: {e}"));
-        let mask_cache = CausalMaskCache::new(config.max_position_embeddings, &device)
-            .unwrap_or_else(|e| panic!("Failed to create mask cache: {e}"));
 
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
@@ -113,20 +111,13 @@ mod tests {
         let block = TransformerBlock::load(vb.pp("block"), &config, false)
             .unwrap_or_else(|e| panic!("Failed to load block: {e}"));
 
-        let input = Tensor::randn(0f32, 1f32, (2, 8, 64), &device)
+        let input = Tensor::randn(0f32, 1f32, (2, 8, 256), &device)
             .unwrap_or_else(|e| panic!("Failed to create input: {e}"));
 
         let output = block
-            .forward(
-                &input,
-                0,
-                &rope_cache,
-                &mask_cache,
-                None,
-                config.max_position_embeddings,
-            )
+            .forward(&input, 0, &rope_cache, None, config.max_position_embeddings)
             .unwrap_or_else(|e| panic!("Forward failed: {e}"));
 
-        assert_eq!(output.dims(), &[2, 8, 64]);
+        assert_eq!(output.dims(), &[2, 8, 256]);
     }
 }

@@ -15,7 +15,7 @@ use rig_core::types::{
 };
 
 use crate::block::TransformerBlock;
-use crate::cache::{CausalMaskCache, RopeCache};
+use crate::cache::RopeCache;
 use crate::config::{TokenizerConfig, TransformerConfig};
 use crate::error::{CandleError, Result};
 use crate::kv_cache::CandleKvCache;
@@ -28,7 +28,6 @@ pub struct CandlePartition {
     norm: Option<RmsNorm>,
     lm_head: Option<Linear>,
     rope_cache: RopeCache,
-    mask_cache: CausalMaskCache,
     kv_cache: Mutex<CandleKvCache>,
     device: Device,
     dtype: DType,
@@ -126,7 +125,6 @@ impl CandlePartition {
         };
 
         let rope_cache = RopeCache::new(&config, dtype, device)?;
-        let mask_cache = CausalMaskCache::new(config.max_position_embeddings, device)?;
 
         let dtype_size = match dtype {
             DType::F32 => 4,
@@ -146,7 +144,6 @@ impl CandlePartition {
             norm,
             lm_head,
             rope_cache,
-            mask_cache,
             kv_cache,
             device: device.clone(),
             dtype,
@@ -363,7 +360,6 @@ impl CandlePartition {
                 &x,
                 index_pos,
                 &self.rope_cache,
-                &self.mask_cache,
                 layer_cache,
                 self.config.max_position_embeddings,
             )?;

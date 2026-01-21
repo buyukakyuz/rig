@@ -9,8 +9,8 @@ rust-version.workspace = true
 [dependencies]
 rig-core = { path = "../rig-core" }
 
-candle-core = "0.8"
-candle-nn = "0.8"
+candle-core = { git = "https://github.com/huggingface/candle", branch = "main" }
+candle-nn = { git = "https://github.com/huggingface/candle", branch = "main" }
 
 tokio = { workspace = true }
 thiserror = { workspace = true }

@@ -192,13 +192,14 @@ fn test_rope_cache_for_model() {
 }
 
 #[test]
+#[cfg(feature = "metal")]
 fn test_forward_with_token_ids() {
     if !model_exists() {
         eprintln!("Skipping test: model not found at {:?}", model_path());
         return;
     }
 
-    let device = Device::Cpu;
+    let device = Device::new_metal(0).expect("Metal device required for SDPA");
 
     let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
     let partition = CandlePartition::load(model_path(), &spec, 22, &device)
@@ -229,13 +230,14 @@ fn test_forward_with_token_ids() {
 }
 
 #[test]
+#[cfg(feature = "metal")]
 fn test_forward_decode_single_token() {
     if !model_exists() {
         eprintln!("Skipping test: model not found at {:?}", model_path());
         return;
     }
 
-    let device = Device::Cpu;
+    let device = Device::new_metal(0).expect("Metal device required for SDPA");
 
     let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
     let partition = CandlePartition::load(model_path(), &spec, 22, &device)

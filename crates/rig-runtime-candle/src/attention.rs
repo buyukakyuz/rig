@@ -1,7 +1,7 @@
 use candle_core::{Result, Tensor};
 use candle_nn::{Linear, Module, VarBuilder, linear, linear_no_bias};
 
-use crate::cache::{CausalMaskCache, LayerKvCache, RopeCache};
+use crate::cache::{LayerKvCache, RopeCache};
 use crate::config::TransformerConfig;
 
 #[derive(Debug, Clone)]
@@ -13,7 +13,6 @@ pub struct CausalSelfAttention {
     num_attention_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
-    num_queries_per_kv: usize,
     span: tracing::Span,
 }
 
@@ -55,7 +54,6 @@ impl CausalSelfAttention {
             num_attention_heads,
             num_kv_heads,
             head_dim,
-            num_queries_per_kv: num_attention_heads / num_kv_heads,
             span,
         })
     }
@@ -65,7 +63,6 @@ impl CausalSelfAttention {
         x: &Tensor,
         index_pos: usize,
         rope_cache: &RopeCache,
-        mask_cache: &CausalMaskCache,
         kv_cache: Option<&mut LayerKvCache>,
         max_seq_len: usize,
     ) -> Result<Tensor> {
@@ -103,20 +100,10 @@ impl CausalSelfAttention {
             None => (k.contiguous()?, v.contiguous()?),
         };
 
-        let k = self.repeat_kv(k)?;
-        let v = self.repeat_kv(v)?;
+        let scale = 1.0 / (self.head_dim as f32).sqrt();
+        let do_causal = seq_len > 1;
+        let attn_output = candle_nn::ops::sdpa(&q, &k, &v, None, do_causal, scale, 1.0)?;
 
-        let scale = 1.0 / (self.head_dim as f64).sqrt();
-        let attn_weights = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
-
-        let attn_weights = if seq_len > 1 {
-            self.apply_causal_mask(&attn_weights, mask_cache)?
-        } else {
-            attn_weights
-        };
-
-        let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
-        let attn_output = attn_weights.matmul(&v)?;
         let attn_output = attn_output.transpose(1, 2)?.reshape((
             batch_size,
             seq_len,
@@ -140,68 +127,5 @@ impl CausalSelfAttention {
         let k = candle_nn::rotary_emb::rope(k, &cos, &sin)?;
 
         Ok((q, k))
-    }
-
-    fn repeat_kv(&self, x: Tensor) -> Result<Tensor> {
-        if self.num_queries_per_kv == 1 {
-            return Ok(x);
-        }
-
-        let (batch_size, num_kv_heads, seq_len, head_dim) = x.dims4()?;
-
-        let x = x
-            .unsqueeze(2)?
-            .expand((
-                batch_size,
-                num_kv_heads,
-                self.num_queries_per_kv,
-                seq_len,
-                head_dim,
-            ))?
-            .reshape((
-                batch_size,
-                num_kv_heads * self.num_queries_per_kv,
-                seq_len,
-                head_dim,
-            ))?;
-
-        Ok(x)
-    }
-
-    fn apply_causal_mask(
-        &self,
-        attn_weights: &Tensor,
-        mask_cache: &CausalMaskCache,
-    ) -> Result<Tensor> {
-        let (_, _, seq_len, kv_len) = attn_weights.dims4()?;
-        let device = attn_weights.device();
-        let dtype = attn_weights.dtype();
-
-        let mask = if seq_len == kv_len {
-            mask_cache.get(seq_len)?
-        } else {
-            Self::create_causal_mask(seq_len, kv_len, device)?
-        };
-        let mask = mask.broadcast_as(attn_weights.shape())?;
-
-        let on_true = Tensor::new(f32::NEG_INFINITY, device)?
-            .to_dtype(dtype)?
-            .broadcast_as(attn_weights.shape())?;
-
-        mask.where_cond(&on_true, attn_weights)
-    }
-
-    fn create_causal_mask(
-        seq_len: usize,
-        kv_len: usize,
-        device: &candle_core::Device,
-    ) -> Result<Tensor> {
-        let offset = kv_len.saturating_sub(seq_len);
-
-        let mask: Vec<u8> = (0..seq_len)
-            .flat_map(|i| (0..kv_len).map(move |j| u8::from(j > i + offset)))
-            .collect();
-
-        Tensor::from_slice(&mask, (seq_len, kv_len), device)
     }
 }
