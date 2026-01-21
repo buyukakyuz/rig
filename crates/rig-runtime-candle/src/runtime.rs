@@ -2,7 +2,7 @@ use candle_core::Device;
 
 use std::path::Path;
 
-use rig_core::Partition;
+use rig_core::LoadedPartition;
 use rig_core::error::RuntimeError;
 use rig_core::types::{DType, ModelId, ModelSpec, PartitionSpec, RuntimeCapabilities, RuntimeId};
 
@@ -126,7 +126,7 @@ impl rig_core::Runtime for CandleRuntime {
         &self,
         model: &ModelSpec,
         partition: &PartitionSpec,
-    ) -> impl std::future::Future<Output = Result<Box<dyn Partition>, RuntimeError>> + Send {
+    ) -> impl std::future::Future<Output = Result<LoadedPartition, RuntimeError>> + Send {
         let model_path = model.path.clone();
         let model_path_for_error = model_path.clone();
         let total_layers = model.num_layers;
@@ -147,7 +147,7 @@ impl rig_core::Runtime for CandleRuntime {
             .await
             .map_err(|e| RuntimeError::Internal(format!("Task join error: {e}")))?;
 
-            let partition = partition_result.map_err(|e| match e {
+            let candle_partition = partition_result.map_err(|e| match e {
                 CandleError::ModelNotFound(path) => RuntimeError::ModelNotFound(path),
                 CandleError::Config(config_err) => RuntimeError::LoadFailed {
                     model: model_path_for_error.display().to_string(),
@@ -160,7 +160,11 @@ impl rig_core::Runtime for CandleRuntime {
                 other => RuntimeError::Internal(other.to_string()),
             })?;
 
-            Ok(Box::new(partition) as Box<dyn Partition>)
+            let tokenizer: Box<dyn rig_core::Tokenizer> =
+                Box::new(candle_partition.extract_tokenizer());
+            let partition: Box<dyn rig_core::Partition> = Box::new(candle_partition);
+
+            Ok(LoadedPartition::new(partition, Some(tokenizer)))
         }
     }
 }

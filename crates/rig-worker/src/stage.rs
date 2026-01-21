@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rig_core::{
-    Activation, ActivationMetadata, Assignment, DType, GenerationParams, Partition, RequestId,
-    Shape, TensorData, UsageStats,
+    Activation, ActivationMetadata, Assignment, DType, GenerationParams, LoadedPartition,
+    Partition, RequestId, Shape, TensorData, Tokenizer, UsageStats,
 };
 use rig_inference::{Sampler, StopChecker};
 use tokio::sync::{Mutex, broadcast, mpsc};
@@ -15,6 +15,7 @@ use crate::peer_connection::PeerConnection;
 
 pub struct PipelineStage {
     partition: Box<dyn Partition>,
+    tokenizer: Option<Box<dyn Tokenizer>>,
     assignment: Assignment,
     prev_peer: Option<PeerConnection>,
     next_peer: Option<PeerConnection>,
@@ -23,14 +24,34 @@ pub struct PipelineStage {
 
 impl PipelineStage {
     #[must_use]
+    pub fn from_loaded(
+        loaded: LoadedPartition,
+        assignment: Assignment,
+        prev_peer: Option<PeerConnection>,
+        next_peer: Option<PeerConnection>,
+    ) -> Self {
+        let (partition, tokenizer) = loaded.into_parts();
+        Self {
+            partition,
+            tokenizer,
+            assignment,
+            prev_peer,
+            next_peer,
+            coord_client: None,
+        }
+    }
+
+    #[must_use]
     pub fn new(
         partition: Box<dyn Partition>,
+        tokenizer: Option<Box<dyn Tokenizer>>,
         assignment: Assignment,
         prev_peer: Option<PeerConnection>,
         next_peer: Option<PeerConnection>,
     ) -> Self {
         Self {
             partition,
+            tokenizer,
             assignment,
             prev_peer,
             next_peer,
@@ -46,6 +67,11 @@ impl PipelineStage {
     #[must_use]
     pub fn partition_mut(&mut self) -> &mut Box<dyn Partition> {
         &mut self.partition
+    }
+
+    #[must_use]
+    pub fn tokenizer(&self) -> Option<&dyn Tokenizer> {
+        self.tokenizer.as_deref()
     }
 
     #[must_use]
@@ -121,7 +147,6 @@ impl PipelineStage {
         let start = Instant::now();
 
         let eos_token = self
-            .partition
             .tokenizer()
             .ok_or_else(|| {
                 WorkerError::partition_processing("Model does not support tokenization")
@@ -154,14 +179,13 @@ impl PipelineStage {
             "StopChecker configured"
         );
 
-        if self.partition.tokenizer().is_none() {
+        if self.tokenizer().is_none() {
             return Err(WorkerError::partition_processing(
                 "Model does not support tokenization",
             ));
         }
 
         let mut decode_stream = self
-            .partition
             .tokenizer()
             .and_then(|t| t.create_decode_stream(true).ok());
 
@@ -265,10 +289,7 @@ impl PipelineStage {
     ) -> Result<(), WorkerError> {
         let request_id = activation.metadata.request_id;
 
-        let eos_token = self
-            .partition
-            .tokenizer()
-            .map_or(2, rig_core::Tokenizer::eos_token);
+        let eos_token = self.tokenizer().map_or(2, Tokenizer::eos_token);
 
         let output = self.forward(activation)?;
 
@@ -451,6 +472,7 @@ impl std::fmt::Debug for PipelineStage {
 
 pub struct PipelineStageBuilder {
     partition: Option<Box<dyn Partition>>,
+    tokenizer: Option<Box<dyn Tokenizer>>,
     assignment: Option<Assignment>,
     prev_peer: Option<PeerConnection>,
     next_peer: Option<PeerConnection>,
@@ -462,6 +484,7 @@ impl PipelineStageBuilder {
     pub const fn new() -> Self {
         Self {
             partition: None,
+            tokenizer: None,
             assignment: None,
             prev_peer: None,
             next_peer: None,
@@ -470,8 +493,22 @@ impl PipelineStageBuilder {
     }
 
     #[must_use]
+    pub fn with_loaded_partition(mut self, loaded: LoadedPartition) -> Self {
+        let (partition, tokenizer) = loaded.into_parts();
+        self.partition = Some(partition);
+        self.tokenizer = tokenizer;
+        self
+    }
+
+    #[must_use]
     pub fn with_partition(mut self, partition: Box<dyn Partition>) -> Self {
         self.partition = Some(partition);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tokenizer(mut self, tokenizer: Box<dyn Tokenizer>) -> Self {
+        self.tokenizer = Some(tokenizer);
         self
     }
 
@@ -507,7 +544,13 @@ impl PipelineStageBuilder {
             .assignment
             .ok_or_else(|| WorkerError::config("Assignment is required"))?;
 
-        let mut stage = PipelineStage::new(partition, assignment, self.prev_peer, self.next_peer);
+        let mut stage = PipelineStage::new(
+            partition,
+            self.tokenizer,
+            assignment,
+            self.prev_peer,
+            self.next_peer,
+        );
 
         if let Some(client) = self.coord_client {
             stage.set_coordinator_client(client);

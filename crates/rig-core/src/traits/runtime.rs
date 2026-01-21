@@ -2,10 +2,9 @@ use std::path::Path;
 
 use crate::error::{PartitionError, RuntimeError};
 use crate::traits::cache::KvCache;
-use crate::traits::tokenizer::Tokenizer;
 use crate::types::{
-    Activation, MemoryUsage, ModelId, ModelSpec, PartitionSpec, RequestId, RuntimeCapabilities,
-    RuntimeId,
+    Activation, LoadedPartition, MemoryUsage, ModelId, ModelSpec, PartitionSpec, RequestId,
+    RuntimeCapabilities, RuntimeId,
 };
 
 pub trait Runtime: Send + Sync {
@@ -17,7 +16,7 @@ pub trait Runtime: Send + Sync {
         &self,
         model: &ModelSpec,
         partition: &PartitionSpec,
-    ) -> impl std::future::Future<Output = Result<Box<dyn Partition>, RuntimeError>> + Send;
+    ) -> impl std::future::Future<Output = Result<LoadedPartition, RuntimeError>> + Send;
 }
 
 pub trait Partition: Send + Sync {
@@ -28,9 +27,6 @@ pub trait Partition: Send + Sync {
         None
     }
     fn kv_cache_mut(&mut self) -> Option<&mut dyn KvCache> {
-        None
-    }
-    fn tokenizer(&self) -> Option<&dyn Tokenizer> {
         None
     }
     fn release_request_cache(&self, _request_id: RequestId) {}

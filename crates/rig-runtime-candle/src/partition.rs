@@ -8,42 +8,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::{
     Embedding, Linear, Module, RmsNorm, VarBuilder, embedding, linear_no_bias, rms_norm,
 };
-use ouroboros::self_referencing;
 use tokenizers::Tokenizer as HfTokenizer;
-
-type HfDecodeStream<'a> = tokenizers::DecodeStream<
-    'a,
-    tokenizers::models::ModelWrapper,
-    tokenizers::normalizers::NormalizerWrapper,
-    tokenizers::pre_tokenizers::PreTokenizerWrapper,
-    tokenizers::processors::PostProcessorWrapper,
-    tokenizers::decoders::DecoderWrapper,
->;
-
-#[self_referencing]
-pub struct CandleDecodeStream {
-    tokenizer: Box<HfTokenizer>,
-    #[borrows(tokenizer)]
-    #[covariant]
-    stream: HfDecodeStream<'this>,
-}
-
-impl rig_core::TokenDecodeStream for CandleDecodeStream {
-    fn step(
-        &mut self,
-        token_id: u32,
-    ) -> std::result::Result<Option<String>, rig_core::TokenizerError> {
-        self.with_stream_mut(|stream| {
-            stream
-                .step(token_id)
-                .map_err(|e| rig_core::TokenizerError::DecodeFailed(e.to_string()))
-        })
-    }
-
-    fn flush(&mut self) -> std::result::Result<Option<String>, rig_core::TokenizerError> {
-        Ok(None)
-    }
-}
 
 use rig_core::error::PartitionError;
 use rig_core::types::{
@@ -549,6 +514,17 @@ impl CandlePartition {
             .decode_batch(token_sequences, true)
             .map_err(|e| CandleError::TokenizationFailed(e.to_string()))
     }
+
+    pub fn extract_tokenizer(&self) -> crate::tokenizer::CandleTokenizer {
+        crate::tokenizer::CandleTokenizer::new(
+            self.tokenizer.clone(),
+            self.chat_template.clone(),
+            self.eos_token_str.clone(),
+            self.add_bos_token,
+            self.bos_token(),
+            self.eos_token(),
+        )
+    }
 }
 
 impl rig_core::Partition for CandlePartition {
@@ -579,10 +555,6 @@ impl rig_core::Partition for CandlePartition {
 
     fn memory_usage(&self) -> MemoryUsage {
         self.memory_usage
-    }
-
-    fn tokenizer(&self) -> Option<&dyn rig_core::Tokenizer> {
-        Some(self)
     }
 
     fn release_request_cache(&self, _request_id: rig_core::RequestId) {
@@ -682,22 +654,12 @@ impl rig_core::Tokenizer for CandlePartition {
             .map_err(|e| rig_core::TokenizerError::DecodeFailed(e.to_string()))
     }
 
-    #[allow(clippy::borrowed_box)]
     fn create_decode_stream(
         &self,
         skip_special_tokens: bool,
     ) -> std::result::Result<Box<dyn rig_core::TokenDecodeStream>, rig_core::TokenizerError> {
-        let tokenizer_clone = Box::new(self.tokenizer.clone());
-
-        Ok(Box::new(
-            CandleDecodeStreamBuilder {
-                tokenizer: tokenizer_clone,
-                stream_builder: |tokenizer: &Box<HfTokenizer>| {
-                    tokenizer.decode_stream(skip_special_tokens)
-                },
-            }
-            .build(),
-        ))
+        self.extract_tokenizer()
+            .create_decode_stream(skip_special_tokens)
     }
 }
 

@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 
 use rig_core::{
     Activation, ActivationMetadata, Address, Assignment, CoordinatorMessage, DType, InferenceInput,
-    InferenceRequest, ModelId, ModelInfo, ModelSpec, NodeId, NodeInfo, NodeStatus, Partition,
-    PartitionSpec, RequestId, Runtime, RuntimeCapabilities, RuntimeError, Shape, TensorData,
-    Tokenizer, UsageStats,
+    InferenceRequest, LoadedPartition, ModelId, ModelInfo, ModelSpec, NodeId, NodeInfo, NodeStatus,
+    Partition, PartitionSpec, RequestId, Runtime, RuntimeCapabilities, RuntimeError, Shape,
+    TensorData, Tokenizer, UsageStats,
 };
 use rig_runtime_candle::CandleRuntime;
 use tokio::sync::{broadcast, mpsc};
@@ -38,7 +38,7 @@ impl RuntimeWrapper {
         &self,
         model: &ModelSpec,
         partition: &PartitionSpec,
-    ) -> Result<Box<dyn Partition>, RuntimeError> {
+    ) -> Result<LoadedPartition, RuntimeError> {
         match self {
             Self::Candle(rt) => rt.load_partition(model, partition).await,
         }
@@ -222,7 +222,7 @@ impl WorkerNode {
         &self,
         assignment: &Assignment,
         model_spec: &ModelSpec,
-    ) -> Result<Box<dyn rig_core::Partition>, WorkerError> {
+    ) -> Result<LoadedPartition, WorkerError> {
         let runtime = self
             .runtime
             .as_ref()
@@ -237,10 +237,10 @@ impl WorkerNode {
             "Loading partition"
         );
 
-        let partition = runtime.load_partition(model_spec, &partition_spec).await?;
+        let loaded = runtime.load_partition(model_spec, &partition_spec).await?;
 
         info!("Partition loaded successfully");
-        Ok(partition)
+        Ok(loaded)
     }
 
     #[instrument(skip(self, assignment))]
@@ -345,10 +345,10 @@ impl WorkerNode {
 
         let assignment = self.wait_for_assignment().await?;
 
-        let partition = self.load_partition(&assignment, &model_spec).await?;
+        let loaded = self.load_partition(&assignment, &model_spec).await?;
 
         if self.config.enable_warmup {
-            run_warmup(partition.as_ref())?;
+            run_warmup(loaded.partition())?;
         }
 
         let (prev_peer, next_peer) = self.establish_peer_connections(&assignment).await?;
@@ -358,7 +358,8 @@ impl WorkerNode {
             has_next_peer = next_peer.is_some(),
             "Building PipelineStage"
         );
-        let mut stage = PipelineStage::new(partition, assignment.clone(), prev_peer, next_peer);
+        let mut stage =
+            PipelineStage::from_loaded(loaded, assignment.clone(), prev_peer, next_peer);
         debug!(
             is_last_stage = stage.is_last_stage(),
             has_next_peer_in_stage = stage.has_next_peer(),
@@ -450,7 +451,6 @@ impl WorkerNode {
             let stage = self.stage.as_ref().ok_or(WorkerError::NoAssignment)?;
 
             let tokenizer = stage
-                .partition()
                 .tokenizer()
                 .ok_or_else(|| WorkerError::config("Model does not support tokenization"))?;
 
@@ -547,7 +547,7 @@ impl WorkerNode {
         let mut decode_stream = self
             .stage
             .as_ref()
-            .and_then(|s| s.partition().tokenizer())
+            .and_then(|s| s.tokenizer())
             .and_then(|t| t.create_decode_stream(true).ok());
 
         loop {

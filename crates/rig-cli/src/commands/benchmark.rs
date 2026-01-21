@@ -338,7 +338,7 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
 
     let partition_spec = PartitionSpec::new(0..model_spec.num_layers, DType::F16);
 
-    let partition = runtime
+    let loaded = runtime
         .load_partition(&model_spec, &partition_spec)
         .await
         .context("Failed to load model partition")?;
@@ -354,11 +354,10 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
     }
 
     let assignment = create_standalone_assignment(model_spec.num_layers);
-    let mut stage = PipelineStage::new(partition, assignment, None, None);
+    let mut stage = PipelineStage::from_loaded(loaded, assignment, None, None);
 
     let (bos_token, vocab_size) = {
         let tokenizer = stage
-            .partition()
             .tokenizer()
             .ok_or_else(|| anyhow::anyhow!("Model does not have a tokenizer"))?;
         (tokenizer.bos_token(), tokenizer.vocab_size())

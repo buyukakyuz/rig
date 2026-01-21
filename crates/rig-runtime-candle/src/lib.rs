@@ -25,11 +25,13 @@ pub mod memory;
 pub mod mlp;
 pub mod partition;
 pub mod runtime;
+pub mod tokenizer;
 
 pub use config::{Activation, EosTokenId, TransformerConfig};
 pub use error::{CandleError, ConfigError, ConfigResult, Result};
 pub use partition::CandlePartition;
 pub use runtime::CandleRuntime;
+pub use tokenizer::CandleTokenizer;
 
 pub use cache::{LayerKvCache, PartitionKvCache, RopeCache};
 pub use kv_cache::CandleKvCache;
