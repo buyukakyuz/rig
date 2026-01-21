@@ -310,7 +310,6 @@ impl WorkerNode {
     pub async fn run(&mut self, model_id: ModelId) -> Result<(), WorkerError> {
         self.init_runtime()?;
 
-        // Discover model metadata from files (runtime knows how to parse its format)
         let model_path = self
             .config
             .get_model_path(&model_id)
@@ -588,6 +587,7 @@ impl WorkerNode {
                 CoordinatorMessage::FinishGeneration {
                     request_id: _,
                     generated_tokens,
+                    time_to_first_token_ms,
                 } => {
                     debug!(
                         %request_id,
@@ -601,7 +601,7 @@ impl WorkerNode {
                         prompt_tokens,
                         completion_tokens: generated_tokens.len(),
                         total_time_ms: elapsed.as_millis() as u64,
-                        time_to_first_token_ms: 0,
+                        time_to_first_token_ms,
                     };
 
                     streaming_client

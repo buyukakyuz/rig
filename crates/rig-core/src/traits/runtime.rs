@@ -11,10 +11,6 @@ use crate::types::{
 pub trait Runtime: Send + Sync {
     fn id(&self) -> RuntimeId;
     fn capabilities(&self) -> RuntimeCapabilities;
-
-    /// Discover model metadata from files without loading weights.
-    /// Returns a fully populated ModelSpec with num_layers, hidden_dim, etc.
-    /// Each runtime implementation reads its own config format (HuggingFace config.json, GGUF, etc.)
     fn discover_model(&self, model_id: ModelId, path: &Path) -> Result<ModelSpec, RuntimeError>;
 
     fn load_partition(

@@ -92,6 +92,7 @@ pub enum GenerationDecision {
         request_id: RequestId,
         generated_tokens: Vec<u32>,
         reason: StopReason,
+        time_to_first_token_ms: u64,
     },
 }
 
@@ -180,11 +181,13 @@ impl InferenceEngine {
             );
 
             let generated_tokens = state.generated_tokens.clone();
+            let time_to_first_token_ms = state.time_to_first_token_ms.unwrap_or(0);
 
             Ok(GenerationDecision::Finish {
                 request_id,
                 generated_tokens,
                 reason: stop_reason,
+                time_to_first_token_ms,
             })
         } else {
             Ok(GenerationDecision::Continue {

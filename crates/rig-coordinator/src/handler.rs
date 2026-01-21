@@ -303,11 +303,13 @@ impl ConnectionHandler {
                 request_id,
                 generated_tokens,
                 reason,
+                time_to_first_token_ms,
             }) => {
                 tracing::debug!(%request_id, reason = %reason, "Returning FinishGeneration");
                 Ok(CoordinatorMessage::FinishGeneration {
                     request_id,
                     generated_tokens,
+                    time_to_first_token_ms,
                 })
             }
             None => Ok(CoordinatorMessage::GenerationPending { request_id }),

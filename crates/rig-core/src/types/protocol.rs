@@ -58,6 +58,7 @@ pub enum CoordinatorMessage {
     FinishGeneration {
         request_id: RequestId,
         generated_tokens: Vec<u32>,
+        time_to_first_token_ms: u64,
     },
     GenerationPending {
         request_id: RequestId,
