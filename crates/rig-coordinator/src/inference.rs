@@ -4,8 +4,9 @@ use std::time::Instant;
 
 use rig_core::{
     CoordError, GenerationParams, InferenceOutput, InferenceRequest, InferenceResult, PipelineId,
-    RequestId, Sampler, StopChecker, StopReason, UsageStats,
+    RequestId, UsageStats,
 };
+use rig_inference::{Sampler, StopChecker, StopReason};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 

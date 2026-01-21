@@ -3,8 +3,9 @@ use std::time::Instant;
 
 use rig_core::{
     Activation, ActivationMetadata, Assignment, DType, GenerationParams, Partition, RequestId,
-    Sampler, Shape, StopChecker, TensorData, UsageStats,
+    Shape, TensorData, UsageStats,
 };
+use rig_inference::{Sampler, StopChecker};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tracing::{debug, info, instrument, trace, warn};
 

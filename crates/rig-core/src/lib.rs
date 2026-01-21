@@ -1,6 +1,4 @@
 pub mod error;
-pub mod sampling;
-pub mod stopping;
 pub mod traits;
 pub mod types;
 
@@ -14,9 +12,6 @@ pub use traits::{
     LatencyClass, Listener, Partition, PeerDiscovery, Runtime, TokenDecodeStream, Tokenizer,
     TransportCharacteristics, TransportFactory, WorkCoordination,
 };
-
-pub use sampling::Sampler;
-pub use stopping::{StopChecker, StopReason};
 
 pub use types::{
     Action, Activation, ActivationMetadata, Address, Assignment, CacheSlot, ChatMessage,

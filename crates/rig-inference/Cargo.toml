@@ -1,0 +1,16 @@
+[package]
+name = "rig-inference"
+description = "Inference utilities for Rig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rig-core.workspace = true
+rand.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

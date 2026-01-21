@@ -72,7 +72,7 @@ impl TransformerBlock {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "metal"))]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
@@ -81,7 +81,6 @@ mod tests {
     use candle_nn::VarMap;
 
     #[test]
-    #[cfg(feature = "metal")]
     fn test_block_shapes() {
         let device = Device::new_metal(0).expect("Metal device required for SDPA");
         let dtype = DType::F32;

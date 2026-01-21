@@ -1,7 +1,7 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use crate::GenerationParams;
+use rig_core::GenerationParams;
 
 pub struct Sampler {
     temperature: f32,

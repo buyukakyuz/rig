@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/rig-core",
+    "crates/rig-inference",
     "crates/rig-runtime-candle",
     "crates/rig-transport-tcp",
     "crates/rig-message-bincode",
@@ -31,6 +32,7 @@ rand = "0.8"
 minijinja = "2"
 
 rig-core = { path = "crates/rig-core" }
+rig-inference = { path = "crates/rig-inference" }
 rig-runtime-candle = { path = "crates/rig-runtime-candle" }
 rig-transport-tcp = { path = "crates/rig-transport-tcp" }
 rig-message-bincode = { path = "crates/rig-message-bincode" }

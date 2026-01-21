@@ -8,10 +8,12 @@
 use std::path::PathBuf;
 
 use candle_core::{DType, Device};
-use rig_core::types::{
-    Activation, ActivationMetadata, PartitionSpec, RequestId, Shape, TensorData,
-};
-use rig_core::{Partition, Runtime};
+#[cfg(feature = "metal")]
+use rig_core::Partition;
+use rig_core::Runtime;
+use rig_core::types::PartitionSpec;
+#[cfg(feature = "metal")]
+use rig_core::types::{Activation, ActivationMetadata, RequestId, Shape, TensorData};
 use rig_runtime_candle::{CandlePartition, CandleRuntime, TransformerConfig};
 
 fn model_path() -> PathBuf {
