@@ -289,18 +289,12 @@ impl CandlePartition {
                 let floats: &[f32] = bytemuck::cast_slice(bytes);
                 Ok(Tensor::from_slice(floats, shape.as_slice(), &self.device)?)
             }
-            DType::F16 => {
-                let halfs: &[half::f16] = bytemuck::cast_slice(bytes);
-                let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
-                let tensor = Tensor::from_slice(&floats, shape.as_slice(), &self.device)?;
-                tensor.to_dtype(DType::F16).map_err(Into::into)
-            }
-            DType::BF16 => {
-                let bhalfs: &[half::bf16] = bytemuck::cast_slice(bytes);
-                let floats: Vec<f32> = bhalfs.iter().map(|h| h.to_f32()).collect();
-                let tensor = Tensor::from_slice(&floats, shape.as_slice(), &self.device)?;
-                tensor.to_dtype(DType::BF16).map_err(Into::into)
-            }
+            DType::F16 | DType::BF16 => Ok(Tensor::from_raw_buffer(
+                bytes,
+                self.dtype,
+                &shape,
+                &self.device,
+            )?),
             _ => Err(CandleError::DTypeConversion(format!(
                 "Unsupported dtype: {:?}",
                 self.dtype
@@ -315,30 +309,29 @@ impl CandlePartition {
     ) -> Result<Activation> {
         let shape = Shape::from_slice(tensor.dims());
         let tensor = tensor.to_device(&Device::Cpu)?;
-        let tensor_f32 = tensor.to_dtype(DType::F32)?;
-        let flat = tensor_f32.flatten_all()?;
-        let floats: Vec<f32> = flat.to_vec1()?;
+        let flat = tensor.flatten_all()?;
 
         let (bytes, dtype) = match self.dtype {
             DType::F32 => {
+                let floats: Vec<f32> = flat.to_vec1()?;
                 let bytes: Vec<u8> = bytemuck::cast_slice(&floats).to_vec();
                 (bytes, rig_core::DType::F32)
             }
             DType::F16 => {
-                let halfs: Vec<half::f16> =
-                    floats.iter().map(|f| half::f16::from_f32(*f)).collect();
+                let halfs: Vec<half::f16> = flat.to_vec1()?;
                 let bytes: Vec<u8> = bytemuck::cast_slice(&halfs).to_vec();
                 (bytes, rig_core::DType::F16)
             }
             DType::BF16 => {
-                let bhalfs: Vec<half::bf16> =
-                    floats.iter().map(|f| half::bf16::from_f32(*f)).collect();
+                let bhalfs: Vec<half::bf16> = flat.to_vec1()?;
                 let bytes: Vec<u8> = bytemuck::cast_slice(&bhalfs).to_vec();
                 (bytes, rig_core::DType::BF16)
             }
             _ => {
-                let bytes: Vec<u8> = bytemuck::cast_slice(&floats).to_vec();
-                (bytes, rig_core::DType::F32)
+                return Err(CandleError::DTypeConversion(format!(
+                    "Unsupported dtype: {:?}",
+                    self.dtype
+                )));
             }
         };
 
