@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 rig-core.workspace = true
+rig-inference.workspace = true
 rig-coordinator.workspace = true
 rig-worker.workspace = true
 rig-transport-tcp = { path = "../rig-transport-tcp" }

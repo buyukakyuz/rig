@@ -11,6 +11,9 @@ rust-version.workspace = true
 rig-core.workspace = true
 rand.workspace = true
 serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+half = "2.4"
 
 [lints]
 workspace = true

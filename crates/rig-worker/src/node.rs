@@ -8,8 +8,8 @@ use rig_core::{
     TensorData, Tokenizer, UsageStats,
 };
 use rig_runtime_candle::CandleRuntime;
-use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error, info, instrument, warn};
+use tokio::sync::broadcast;
+use tracing::{debug, info, instrument, warn};
 
 use crate::config::{RuntimeConfig, WorkerConfig};
 use crate::coordinator_client::{CoordinatorClient, create_heartbeat_client};
@@ -447,85 +447,27 @@ impl WorkerNode {
             return Err(WorkerError::NoAssignment);
         }
 
-        let (activation, is_last, params) = {
+        let activation = {
             let stage = self.stage.as_ref().ok_or(WorkerError::NoAssignment)?;
 
             let tokenizer = stage
                 .tokenizer()
                 .ok_or_else(|| WorkerError::config("Model does not support tokenization"))?;
 
-            let activation = create_initial_activation(&request, tokenizer)?;
-            let is_last = stage.is_last_stage();
-            (activation, is_last, request.params.clone())
+            create_initial_activation(&request, tokenizer)?
         };
 
-        if is_last {
-            self.process_streaming_request(request_id, activation, &params)
-                .await?;
-        } else {
-            let stage = self.stage.as_mut().ok_or(WorkerError::NoAssignment)?;
-            let prompt_tokens = activation.metadata.positions.len();
-            let start_time = Instant::now();
-
-            let output = stage.forward(activation)?;
-            stage.send_activation(&output).await?;
-
-            self.run_multi_stage_generation_loop(request_id, prompt_tokens, start_time)
-                .await?;
-        }
-
-        debug!(%request_id, "Request processed");
-        Ok(())
-    }
-
-    async fn process_streaming_request(
-        &mut self,
-        request_id: rig_core::RequestId,
-        activation: Activation,
-        params: &rig_core::GenerationParams,
-    ) -> Result<(), WorkerError> {
-        let (token_tx, mut token_rx) = mpsc::unbounded_channel::<String>();
-
-        let coordinator_addr = self.config.coordinator_addr.clone();
-        let node_id = self.node_id.ok_or(WorkerError::NotRegistered)?;
-
-        let forwarder_handle = tokio::spawn(async move {
-            let mut client =
-                match CoordinatorClient::connect_for_node(&coordinator_addr, node_id).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!(error = %e, "Failed to connect streaming forwarder");
-                        return Err(e);
-                    }
-                };
-
-            while let Some(token_text) = token_rx.recv().await {
-                if let Err(e) = client.send_token(request_id, token_text).await {
-                    error!(%request_id, error = %e, "Failed to send token");
-                    return Err(e);
-                }
-            }
-
-            Ok(client)
-        });
+        let prompt_tokens = activation.metadata.positions.len();
+        let start_time = Instant::now();
 
         let stage = self.stage.as_mut().ok_or(WorkerError::NoAssignment)?;
-        let usage = stage.generate(activation, params, token_tx).await?;
+        let output = stage.forward(activation)?;
+        stage.send_activation(&output).await?;
 
-        match forwarder_handle.await {
-            Ok(Ok(mut client)) => {
-                if let Err(e) = client.send_streaming_complete(request_id, usage).await {
-                    error!(%request_id, error = %e, "Failed to send streaming complete");
-                }
-            }
-            Ok(Err(e)) => {
-                error!(%request_id, error = %e, "Streaming forwarder failed");
-            }
-            Err(e) => {
-                error!(%request_id, error = %e, "Streaming forwarder task panicked");
-            }
-        }
+        self.run_multi_stage_generation_loop(request_id, prompt_tokens, start_time)
+            .await?;
 
+        debug!(%request_id, "Request processed");
         Ok(())
     }
 

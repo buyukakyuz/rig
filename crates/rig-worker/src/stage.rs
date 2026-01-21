@@ -1,13 +1,8 @@
 use std::sync::Arc;
-use std::time::Instant;
 
-use rig_core::{
-    Activation, ActivationMetadata, Assignment, DType, GenerationParams, LoadedPartition,
-    Partition, RequestId, Shape, TensorData, Tokenizer, UsageStats,
-};
-use rig_inference::{Sampler, StopChecker};
-use tokio::sync::{Mutex, broadcast, mpsc};
-use tracing::{debug, info, instrument, trace, warn};
+use rig_core::{Activation, Assignment, LoadedPartition, Partition, Tokenizer};
+use tokio::sync::{Mutex, broadcast};
+use tracing::{debug, info, instrument, warn};
 
 use crate::coordinator_client::CoordinatorClient;
 use crate::error::WorkerError;
@@ -75,6 +70,11 @@ impl PipelineStage {
     }
 
     #[must_use]
+    pub fn partition_and_tokenizer(&mut self) -> (&mut dyn Partition, Option<&dyn Tokenizer>) {
+        (self.partition.as_mut(), self.tokenizer.as_deref())
+    }
+
+    #[must_use]
     pub const fn assignment(&self) -> &Assignment {
         &self.assignment
     }
@@ -131,140 +131,6 @@ impl PipelineStage {
                 "No next peer configured for send_activation",
             ))
         }
-    }
-
-    #[instrument(skip(self, initial_activation, params, token_tx), fields(
-        request_id = %initial_activation.metadata.request_id
-    ))]
-    #[allow(clippy::too_many_lines)]
-    pub async fn generate(
-        &mut self,
-        initial_activation: Activation,
-        params: &GenerationParams,
-        token_tx: mpsc::UnboundedSender<String>,
-    ) -> Result<UsageStats, WorkerError> {
-        let request_id = initial_activation.metadata.request_id;
-        let start = Instant::now();
-
-        let eos_token = self
-            .tokenizer()
-            .ok_or_else(|| {
-                WorkerError::partition_processing("Model does not support tokenization")
-            })?
-            .eos_token();
-
-        let prompt_tokens = initial_activation.metadata.positions.len();
-        debug!(prompt_tokens, "Prompt token count");
-
-        debug!("Starting prefill forward pass");
-        let output = self.forward(initial_activation)?;
-        let logits = extract_logits(&output);
-
-        if logits.is_empty() {
-            return Err(WorkerError::partition_processing(
-                "Forward pass returned no logits",
-            ));
-        }
-
-        let mut sampler = Sampler::new(params, None);
-        let stop_checker = StopChecker::with_stop_sequences(
-            eos_token,
-            params.max_tokens,
-            params.stop_sequences.clone(),
-        );
-        debug!(
-            eos_token,
-            max_tokens = params.max_tokens,
-            stop_sequences = ?params.stop_sequences,
-            "StopChecker configured"
-        );
-
-        if self.tokenizer().is_none() {
-            return Err(WorkerError::partition_processing(
-                "Model does not support tokenization",
-            ));
-        }
-
-        let mut decode_stream = self
-            .tokenizer()
-            .and_then(|t| t.create_decode_stream(true).ok());
-
-        let first_token = sampler.sample(&logits);
-        let mut generated_tokens = vec![first_token];
-        #[allow(clippy::cast_possible_truncation)]
-        let time_to_first_token = start.elapsed().as_millis() as u64;
-        debug!(token = first_token, "Sampled first token");
-
-        let mut current_decoded_text = String::new();
-
-        if let Some(ref mut stream) = decode_stream {
-            if let Ok(Some(new_text)) = stream.step(first_token) {
-                current_decoded_text.push_str(&new_text);
-                let _ = token_tx.send(new_text);
-            }
-        }
-
-        while stop_checker
-            .should_stop_with_text(&generated_tokens, &current_decoded_text)
-            .should_continue()
-        {
-            let last_token = *generated_tokens
-                .last()
-                .ok_or_else(|| WorkerError::partition_processing("No tokens generated"))?;
-            let position = prompt_tokens + generated_tokens.len() - 1;
-            trace!(last_token, position, "Decode step");
-
-            let decode_activation = create_decode_activation(request_id, last_token, position);
-            let output = self.forward(decode_activation)?;
-            let logits = extract_logits(&output);
-
-            if logits.is_empty() {
-                return Err(WorkerError::partition_processing(
-                    "Decode forward pass returned no logits",
-                ));
-            }
-
-            let token = sampler.sample(&logits);
-            generated_tokens.push(token);
-
-            if let Some(ref mut stream) = decode_stream {
-                if let Ok(Some(new_text)) = stream.step(token) {
-                    current_decoded_text.push_str(&new_text);
-                    let _ = token_tx.send(new_text);
-                }
-            }
-
-            if generated_tokens.len() % 10 == 0 {
-                debug!(count = generated_tokens.len(), "Generated tokens");
-            }
-        }
-
-        let stop_reason =
-            stop_checker.should_stop_with_text(&generated_tokens, &current_decoded_text);
-        debug!(
-            tokens_generated = generated_tokens.len(),
-            %stop_reason,
-            "Streaming generation complete"
-        );
-
-        self.partition.release_request_cache(request_id);
-
-        #[allow(clippy::cast_possible_truncation)]
-        let total_time = start.elapsed().as_millis() as u64;
-
-        info!(
-            completion_tokens = generated_tokens.len(),
-            %stop_reason,
-            total_time_ms = total_time,
-            "Streaming generation complete"
-        );
-
-        Ok(UsageStats {
-            prompt_tokens,
-            completion_tokens: generated_tokens.len(),
-            total_time_ms: total_time,
-            time_to_first_token_ms: time_to_first_token,
-        })
     }
 
     #[instrument(skip(self, activation), fields(
@@ -436,26 +302,6 @@ fn extract_logits(activation: &Activation) -> Vec<f32> {
         }
         _ => Vec::new(),
     }
-}
-
-fn create_decode_activation(request_id: RequestId, token: u32, position: usize) -> Activation {
-    let bytes = token.to_le_bytes().to_vec();
-    trace!(
-        token,
-        position,
-        bytes_len = bytes.len(),
-        "Creating decode activation"
-    );
-    let data = TensorData::cpu(bytes, DType::I8);
-
-    let shape = Shape::new(vec![1, 1, 1]);
-
-    #[allow(clippy::cast_possible_truncation)]
-    let position_u32 = position as u32;
-
-    let metadata = ActivationMetadata::new(request_id, position_u32, vec![position_u32], false);
-
-    Activation::new(data, shape, metadata)
 }
 
 impl std::fmt::Debug for PipelineStage {

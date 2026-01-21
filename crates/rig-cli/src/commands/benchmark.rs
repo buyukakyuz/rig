@@ -10,6 +10,7 @@ use rig_core::{
     Activation, ActivationMetadata, Assignment, DType, GenerationParams, ModelId, Neighbors,
     PartitionSpec, PipelineId, RequestId, Runtime, Shape, StageId, TensorData, UsageStats,
 };
+use rig_inference::LocalGenerator;
 use rig_runtime_candle::{CandleRuntime, Device, memory::query_device_memory};
 use rig_worker::stage::PipelineStage;
 
@@ -168,11 +169,18 @@ async fn run_single_benchmark(
 
     let drain_handle = tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
-    let usage = stage.generate(activation, &params, tx).await?;
+    let (partition, tokenizer) = stage.partition_and_tokenizer();
+    let tokenizer = tokenizer.ok_or_else(|| anyhow::anyhow!("Model does not have a tokenizer"))?;
+
+    let mut generator = LocalGenerator::new(partition, tokenizer);
+    let usage = generator
+        .generate(activation, &params, tx)
+        .await
+        .map_err(|e| anyhow::anyhow!("Generation failed: {e}"))?;
 
     let _ = drain_handle.await;
 
-    stage.partition_mut().release_request_cache(request_id);
+    partition.release_request_cache(request_id);
 
     Ok(usage)
 }
