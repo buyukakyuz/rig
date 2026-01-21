@@ -99,55 +99,93 @@ impl RopeCache {
 
 #[derive(Debug, Clone)]
 pub struct LayerKvCache {
-    k: Option<Tensor>,
-    v: Option<Tensor>,
+    k_buffer: Option<Tensor>,
+    v_buffer: Option<Tensor>,
+    current_len: usize,
+    max_len: usize,
 }
 
 impl LayerKvCache {
     #[must_use]
     pub const fn new() -> Self {
-        Self { k: None, v: None }
+        Self {
+            k_buffer: None,
+            v_buffer: None,
+            current_len: 0,
+            max_len: 0,
+        }
+    }
+
+    pub fn init_buffers(
+        &mut self,
+        batch_size: usize,
+        num_heads: usize,
+        max_seq_len: usize,
+        head_dim: usize,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<()> {
+        if self.k_buffer.is_none() {
+            let shape = (batch_size, num_heads, max_seq_len, head_dim);
+            self.k_buffer = Some(Tensor::zeros(shape, dtype, device)?);
+            self.v_buffer = Some(Tensor::zeros(shape, dtype, device)?);
+            self.max_len = max_seq_len;
+            self.current_len = 0;
+        }
+        Ok(())
     }
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.k.is_none()
-    }
-
-    pub fn seq_len(&self) -> Result<usize> {
-        match &self.k {
-            Some(k) => Ok(k.dim(2)?),
-            None => Ok(0),
-        }
+        self.current_len == 0
     }
 
     #[must_use]
-    pub fn get(&self) -> Option<(&Tensor, &Tensor)> {
-        match (&self.k, &self.v) {
-            (Some(k), Some(v)) => Some((k, v)),
+    pub const fn is_initialized(&self) -> bool {
+        self.k_buffer.is_some()
+    }
+
+    #[must_use]
+    pub const fn seq_len(&self) -> usize {
+        self.current_len
+    }
+
+    #[must_use]
+    pub fn get(&self) -> Option<(Tensor, Tensor)> {
+        match (&self.k_buffer, &self.v_buffer) {
+            (Some(k_buf), Some(v_buf)) if self.current_len > 0 => {
+                let k = k_buf.narrow(2, 0, self.current_len).ok()?;
+                let v = v_buf.narrow(2, 0, self.current_len).ok()?;
+                Some((k, v))
+            }
             _ => None,
         }
     }
 
     pub fn update(&mut self, new_k: Tensor, new_v: Tensor) -> Result<(Tensor, Tensor)> {
-        let (k, v) = match (&self.k, &self.v) {
-            (Some(prev_k), Some(prev_v)) => {
-                let k = Tensor::cat(&[prev_k, &new_k], 2)?.contiguous()?;
-                let v = Tensor::cat(&[prev_v, &new_v], 2)?.contiguous()?;
-                (k, v)
+        let new_seq_len = new_k.dim(2)?;
+
+        match (&self.k_buffer, &self.v_buffer) {
+            (Some(k_buf), Some(v_buf)) => {
+                let new_k = new_k.contiguous()?;
+                let new_v = new_v.contiguous()?;
+
+                k_buf.slice_set(&new_k, 2, self.current_len)?;
+                v_buf.slice_set(&new_v, 2, self.current_len)?;
+
+                let new_len = self.current_len + new_seq_len;
+                self.current_len = new_len;
+
+                let k = k_buf.narrow(2, 0, new_len)?;
+                let v = v_buf.narrow(2, 0, new_len)?;
+                Ok((k, v))
             }
-            _ => (new_k.contiguous()?, new_v.contiguous()?),
-        };
-
-        self.k = Some(k.clone());
-        self.v = Some(v.clone());
-
-        Ok((k, v))
+            _ => Ok((new_k.contiguous()?, new_v.contiguous()?)),
+        }
     }
 
     pub fn clear(&mut self) {
-        self.k = None;
-        self.v = None;
+        self.current_len = 0;
     }
 }
 
@@ -170,6 +208,35 @@ impl PartitionKvCache {
         }
     }
 
+    pub fn init_buffers(
+        &mut self,
+        batch_size: usize,
+        num_kv_heads: usize,
+        max_seq_len: usize,
+        head_dim: usize,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<()> {
+        for layer in &mut self.layers {
+            layer.init_buffers(
+                batch_size,
+                num_kv_heads,
+                max_seq_len,
+                head_dim,
+                dtype,
+                device,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_initialized(&self) -> bool {
+        self.layers
+            .first()
+            .is_some_and(LayerKvCache::is_initialized)
+    }
+
     #[must_use]
     pub fn layer(&self, idx: usize) -> Option<&LayerKvCache> {
         self.layers.get(idx)
@@ -186,13 +253,9 @@ impl PartitionKvCache {
         }
     }
 
-    pub fn seq_len(&self) -> Result<usize> {
-        for layer in &self.layers {
-            if !layer.is_empty() {
-                return layer.seq_len();
-            }
-        }
-        Ok(0)
+    #[must_use]
+    pub fn seq_len(&self) -> usize {
+        self.layers.first().map_or(0, LayerKvCache::seq_len)
     }
 }
 
@@ -236,12 +299,14 @@ mod tests {
         let mut cache = LayerKvCache::new();
 
         assert!(cache.is_empty());
-        assert_eq!(
-            cache
-                .seq_len()
-                .unwrap_or_else(|e| panic!("seq_len failed: {e}")),
-            0
-        );
+        assert!(!cache.is_initialized());
+        assert_eq!(cache.seq_len(), 0);
+
+        cache
+            .init_buffers(1, 4, 100, 32, DType::F32, &device)
+            .unwrap_or_else(|e| panic!("init_buffers failed: {e}"));
+        assert!(cache.is_initialized());
+        assert!(cache.is_empty());
 
         let k1 = Tensor::zeros((1, 4, 8, 32), DType::F32, &device)
             .unwrap_or_else(|e| panic!("Failed to create tensor: {e}"));
@@ -254,6 +319,7 @@ mod tests {
         assert_eq!(k.dims(), &[1, 4, 8, 32]);
         assert_eq!(v.dims(), &[1, 4, 8, 32]);
         assert!(!cache.is_empty());
+        assert_eq!(cache.seq_len(), 8);
 
         let k2 = Tensor::zeros((1, 4, 4, 32), DType::F32, &device)
             .unwrap_or_else(|e| panic!("Failed to create tensor: {e}"));
@@ -265,6 +331,12 @@ mod tests {
             .unwrap_or_else(|e| panic!("update failed: {e}"));
         assert_eq!(k.dims(), &[1, 4, 12, 32]);
         assert_eq!(v.dims(), &[1, 4, 12, 32]);
+        assert_eq!(cache.seq_len(), 12);
+
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.seq_len(), 0);
+        assert!(cache.is_initialized());
     }
 
     #[test]

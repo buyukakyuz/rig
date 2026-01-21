@@ -356,7 +356,7 @@ impl CandlePartition {
         })?;
 
         let tensor_cache = kv_cache.tensor_cache_mut();
-        let index_pos = tensor_cache.seq_len()?;
+        let index_pos = tensor_cache.seq_len();
 
         tracing::debug!(
             input_shape = ?x.dims(),
@@ -372,6 +372,7 @@ impl CandlePartition {
                 &self.rope_cache,
                 &self.mask_cache,
                 layer_cache,
+                self.config.max_position_embeddings,
             )?;
         }
 

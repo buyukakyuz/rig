@@ -67,6 +67,7 @@ impl CausalSelfAttention {
         rope_cache: &RopeCache,
         mask_cache: &CausalMaskCache,
         kv_cache: Option<&mut LayerKvCache>,
+        max_seq_len: usize,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
         let (batch_size, seq_len, _hidden_size) = x.dims3()?;
@@ -86,7 +87,19 @@ impl CausalSelfAttention {
         let (q, k) = self.apply_rotary_emb(&q, &k, index_pos, rope_cache)?;
 
         let (k, v) = match kv_cache {
-            Some(cache) => cache.update(k, v)?,
+            Some(cache) => {
+                if !cache.is_initialized() {
+                    cache.init_buffers(
+                        batch_size,
+                        self.num_kv_heads,
+                        max_seq_len,
+                        self.head_dim,
+                        k.dtype(),
+                        k.device(),
+                    )?;
+                }
+                cache.update(k, v)?
+            }
             None => (k.contiguous()?, v.contiguous()?),
         };
 

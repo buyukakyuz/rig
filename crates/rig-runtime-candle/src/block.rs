@@ -55,14 +55,15 @@ impl TransformerBlock {
         rope_cache: &RopeCache,
         mask_cache: &CausalMaskCache,
         kv_cache: Option<&mut LayerKvCache>,
+        max_seq_len: usize,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
 
         let residual = x;
         let x = self.input_layernorm.forward(x)?;
-        let x = self
-            .self_attn
-            .forward(&x, index_pos, rope_cache, mask_cache, kv_cache)?;
+        let x =
+            self.self_attn
+                .forward(&x, index_pos, rope_cache, mask_cache, kv_cache, max_seq_len)?;
         let x = (residual + x)?;
 
         let residual = &x;
@@ -116,7 +117,14 @@ mod tests {
             .unwrap_or_else(|e| panic!("Failed to create input: {e}"));
 
         let output = block
-            .forward(&input, 0, &rope_cache, &mask_cache, None)
+            .forward(
+                &input,
+                0,
+                &rope_cache,
+                &mask_cache,
+                None,
+                config.max_position_embeddings,
+            )
             .unwrap_or_else(|e| panic!("Forward failed: {e}"));
 
         assert_eq!(output.dims(), &[2, 8, 64]);
