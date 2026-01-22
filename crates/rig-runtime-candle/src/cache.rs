@@ -134,9 +134,6 @@ impl LayerKvCache {
 
         match (&self.k_buffer, &self.v_buffer) {
             (Some(k_buf), Some(v_buf)) => {
-                let new_k = new_k.contiguous()?;
-                let new_v = new_v.contiguous()?;
-
                 k_buf.slice_set(&new_k, 2, self.current_len)?;
                 v_buf.slice_set(&new_v, 2, self.current_len)?;
 
@@ -147,7 +144,7 @@ impl LayerKvCache {
                 let v = v_buf.narrow(2, 0, new_len)?;
                 Ok((k, v))
             }
-            _ => Ok((new_k.contiguous()?, new_v.contiguous()?)),
+            _ => Ok((new_k, new_v)),
         }
     }
 

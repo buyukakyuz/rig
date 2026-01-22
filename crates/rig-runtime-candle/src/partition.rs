@@ -23,6 +23,16 @@ use crate::config::{TokenizerConfig, TransformerConfig};
 use crate::error::{CandleError, Result};
 use crate::kv_cache::CandleKvCache;
 
+#[inline]
+fn pod_vec_to_bytes<T: bytemuck::Pod>(mut v: Vec<T>) -> Vec<u8> {
+    let element_size = std::mem::size_of::<T>();
+    let len = v.len() * element_size;
+    let cap = v.capacity() * element_size;
+    let ptr = v.as_mut_ptr().cast::<u8>();
+    std::mem::forget(v);
+    unsafe { Vec::from_raw_parts(ptr, len, cap) }
+}
+
 pub struct CandlePartition {
     spec: PartitionSpec,
     config: TransformerConfig,
@@ -63,21 +73,8 @@ impl CandlePartition {
         let tokenizer = HfTokenizer::from_file(&tokenizer_path)
             .map_err(|e| CandleError::TokenizerLoad(e.to_string()))?;
 
-        let tokenizer_config_path = model_path.join("tokenizer_config.json");
-        let add_bos_token = if tokenizer_config_path.exists() {
-            match TokenizerConfig::from_file(&tokenizer_config_path) {
-                Ok(c) => c.add_bos_token,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse tokenizer_config.json, defaulting add_bos_token to true: {e}"
-                    );
-                    true
-                }
-            }
-        } else {
-            true
-        };
-        let (chat_template, eos_token_str) = Self::load_chat_template(model_path)?;
+        let (add_bos_token, chat_template, eos_token_str) =
+            Self::load_tokenizer_config(model_path)?;
         let dtype = Self::convert_dtype(spec.dtype)?;
         let safetensor_files = Self::find_safetensor_files(model_path)?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&safetensor_files, dtype, device)? };
@@ -222,7 +219,7 @@ impl CandlePartition {
         }
     }
 
-    fn load_chat_template(model_path: &Path) -> Result<(Option<String>, String)> {
+    fn load_tokenizer_config(model_path: &Path) -> Result<(bool, Option<String>, String)> {
         let jinja_path = model_path.join("chat_template.jinja");
         let template_from_file = if jinja_path.exists() {
             match std::fs::read_to_string(&jinja_path) {
@@ -237,45 +234,28 @@ impl CandlePartition {
         };
 
         let tokenizer_config_path = model_path.join("tokenizer_config.json");
-        let (template_from_config, eos_token_str) = if tokenizer_config_path.exists() {
-            match std::fs::read_to_string(&tokenizer_config_path) {
-                Ok(config_str) => match serde_json::from_str::<serde_json::Value>(&config_str) {
-                    Ok(config_json) => {
-                        let template = config_json
-                            .get("chat_template")
-                            .and_then(serde_json::Value::as_str)
-                            .map(String::from);
-                        let eos = config_json
-                            .get("eos_token")
-                            .and_then(serde_json::Value::as_str)
-                            .map_or_else(
-                                || {
-                                    tracing::warn!(
-                                        "eos_token not found in tokenizer_config.json, defaulting to </s>"
-                                    );
-                                    "</s>".to_string()
-                                },
-                                String::from,
-                            );
-                        (template, eos)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse tokenizer_config.json: {e}");
-                        (None, "</s>".to_string())
-                    }
-                },
+        let tokenizer_config = if tokenizer_config_path.exists() {
+            match TokenizerConfig::from_file(&tokenizer_config_path) {
+                Ok(config) => Some(config),
                 Err(e) => {
-                    tracing::warn!("Failed to read tokenizer_config.json: {e}");
-                    (None, "</s>".to_string())
+                    tracing::warn!("Failed to parse tokenizer_config.json: {e}");
+                    None
                 }
             }
         } else {
-            (None, "</s>".to_string())
+            None
         };
 
-        let chat_template = template_from_file.or(template_from_config);
+        let add_bos_token = tokenizer_config.as_ref().map_or(true, |c| c.add_bos_token);
 
-        Ok((chat_template, eos_token_str))
+        let eos_token_str = tokenizer_config
+            .as_ref()
+            .map_or_else(|| "</s>".to_string(), |c| c.eos_token_str().to_string());
+
+        let chat_template =
+            template_from_file.or_else(|| tokenizer_config.and_then(|c| c.chat_template));
+
+        Ok((add_bos_token, chat_template, eos_token_str))
     }
 
     fn estimate_memory(
@@ -347,18 +327,15 @@ impl CandlePartition {
         let (bytes, dtype) = match self.dtype {
             DType::F32 => {
                 let floats: Vec<f32> = flat.to_vec1()?;
-                let bytes: Vec<u8> = bytemuck::cast_slice(&floats).to_vec();
-                (bytes, rig_core::DType::F32)
+                (pod_vec_to_bytes(floats), rig_core::DType::F32)
             }
             DType::F16 => {
                 let halfs: Vec<half::f16> = flat.to_vec1()?;
-                let bytes: Vec<u8> = bytemuck::cast_slice(&halfs).to_vec();
-                (bytes, rig_core::DType::F16)
+                (pod_vec_to_bytes(halfs), rig_core::DType::F16)
             }
             DType::BF16 => {
                 let bhalfs: Vec<half::bf16> = flat.to_vec1()?;
-                let bytes: Vec<u8> = bytemuck::cast_slice(&bhalfs).to_vec();
-                (bytes, rig_core::DType::BF16)
+                (pod_vec_to_bytes(bhalfs), rig_core::DType::BF16)
             }
             _ => {
                 return Err(CandleError::DTypeConversion(format!(
@@ -410,27 +387,6 @@ impl CandlePartition {
             let x_narrow = x.narrow(1, seq_len - 1, 1)?;
             let x_reshaped = x_narrow.reshape((batch_size, self.config.hidden_size))?;
             let logits = lm_head.forward(&x_reshaped)?;
-
-            if let Ok(logits_f32) = logits.to_dtype(candle_core::DType::F32)
-                && let Ok(flat) = logits_f32.flatten_all()
-                && let Ok(vals) = flat.to_vec1::<f32>()
-            {
-                let max_val = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let min_val = vals.iter().copied().fold(f32::INFINITY, f32::min);
-                let argmax = vals
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .map_or(0, |(i, _)| i);
-                tracing::debug!(
-                    logits_shape = ?logits.dims(),
-                    min = min_val,
-                    max = max_val,
-                    argmax = argmax,
-                    "lm_head output"
-                );
-            }
-
             return Ok(logits.reshape((batch_size, 1, self.config.vocab_size))?);
         }
 

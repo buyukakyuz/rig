@@ -126,10 +126,18 @@ impl TransformerConfig {
 pub struct TokenizerConfig {
     #[serde(default = "default_add_bos_token")]
     pub add_bos_token: bool,
+    #[serde(default)]
+    pub chat_template: Option<String>,
+    #[serde(default = "default_eos_token")]
+    pub eos_token: Option<String>,
 }
 
 fn default_add_bos_token() -> bool {
     true
+}
+
+fn default_eos_token() -> Option<String> {
+    None
 }
 
 impl TokenizerConfig {
@@ -141,6 +149,11 @@ impl TokenizerConfig {
     pub fn from_json(json: &str) -> ConfigResult<Self> {
         let config: Self = serde_json::from_str(json)?;
         Ok(config)
+    }
+
+    #[must_use]
+    pub fn eos_token_str(&self) -> &str {
+        self.eos_token.as_deref().unwrap_or("</s>")
     }
 }
 

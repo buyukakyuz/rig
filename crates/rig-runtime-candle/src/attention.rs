@@ -79,7 +79,7 @@ impl CausalSelfAttention {
 
         let q = q.transpose(1, 2)?.contiguous()?;
         let k = k.transpose(1, 2)?.contiguous()?;
-        let v = v.transpose(1, 2)?;
+        let v = v.transpose(1, 2)?.contiguous()?;
 
         let (q, k) = self.apply_rotary_emb(&q, &k, index_pos, rope_cache)?;
 
@@ -97,7 +97,7 @@ impl CausalSelfAttention {
                 }
                 cache.update(k, v)?
             }
-            None => (k.contiguous()?, v.contiguous()?),
+            None => (k, v),
         };
 
         let scale = 1.0 / (self.head_dim as f32).sqrt();
