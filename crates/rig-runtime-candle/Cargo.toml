@@ -11,6 +11,7 @@ rig-core = { path = "../rig-core" }
 
 candle-core = { git = "https://github.com/huggingface/candle", branch = "main" }
 candle-nn = { git = "https://github.com/huggingface/candle", branch = "main" }
+candle-transformers = { git = "https://github.com/huggingface/candle", branch = "main" }
 
 tokio = { workspace = true }
 thiserror = { workspace = true }
@@ -22,6 +23,7 @@ bytemuck = { version = "1.18", features = ["derive"] }
 tokenizers = { git = "https://github.com/huggingface/tokenizers", branch = "main" }
 minijinja = { workspace = true }
 ouroboros = "0.18"
+rand = { workspace = true }
 
 sysinfo = "0.32"
 cudarc = { version = "0.12", optional = true }

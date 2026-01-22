@@ -8,11 +8,13 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::{
     Embedding, Linear, Module, RmsNorm, VarBuilder, embedding, linear_no_bias, rms_norm,
 };
+use candle_transformers::generation::{LogitsProcessor, Sampling};
 use tokenizers::Tokenizer as HfTokenizer;
 
 use rig_core::error::PartitionError;
 use rig_core::types::{
-    Activation, ActivationMetadata, MemoryUsage, PartitionSpec, Shape, TensorData,
+    Activation, ActivationMetadata, MemoryUsage, PartitionSpec, SampleResult, SamplingParams,
+    Shape, TensorData,
 };
 
 use crate::block::TransformerBlock;
@@ -525,6 +527,94 @@ impl CandlePartition {
             self.eos_token(),
         )
     }
+
+    fn to_candle_sampling(params: &SamplingParams) -> Sampling {
+        if params.temperature <= 0.0 {
+            Sampling::ArgMax
+        } else if params.top_k > 0 && params.top_p < 1.0 {
+            Sampling::TopKThenTopP {
+                k: params.top_k,
+                p: f64::from(params.top_p),
+                temperature: f64::from(params.temperature),
+            }
+        } else if params.top_k > 0 {
+            Sampling::TopK {
+                k: params.top_k,
+                temperature: f64::from(params.temperature),
+            }
+        } else if params.top_p < 1.0 {
+            Sampling::TopP {
+                p: f64::from(params.top_p),
+                temperature: f64::from(params.temperature),
+            }
+        } else {
+            Sampling::All {
+                temperature: f64::from(params.temperature),
+            }
+        }
+    }
+
+    fn forward_sample_impl(
+        &self,
+        input: Activation,
+        sampling: &SamplingParams,
+    ) -> Result<Option<SampleResult>> {
+        if self.lm_head.is_none() {
+            return Ok(None);
+        }
+
+        let tensor = if self.has_embeddings() && input.dtype() == rig_core::DType::I8 {
+            let token_ids = self.extract_token_ids(&input)?;
+            self.embed(&token_ids)?
+        } else {
+            self.activation_to_tensor(&input)?
+        };
+
+        let mut x = tensor;
+
+        let mut kv_cache = self.kv_cache.lock().map_err(|e| {
+            CandleError::Candle(candle_core::Error::Msg(format!(
+                "KV cache lock failed: {e}"
+            )))
+        })?;
+
+        let tensor_cache = kv_cache.tensor_cache_mut();
+        let index_pos = tensor_cache.seq_len();
+
+        for (idx, block) in self.blocks.iter().enumerate() {
+            let layer_cache = tensor_cache.layer_mut(idx);
+            x = block.forward(
+                &x,
+                index_pos,
+                &self.rope_cache,
+                layer_cache,
+                self.config.max_position_embeddings,
+            )?;
+        }
+
+        if let Some(ref norm) = self.norm {
+            x = norm.forward(&x)?;
+        }
+
+        let lm_head = self
+            .lm_head
+            .as_ref()
+            .ok_or_else(|| CandleError::WeightNotFound("lm_head not available".to_string()))?;
+
+        let (batch_size, seq_len, _hidden_size) = x.dims3()?;
+        let x_narrow = x.narrow(1, seq_len - 1, 1)?;
+        let x_reshaped = x_narrow.reshape((batch_size, self.config.hidden_size))?;
+        let logits = lm_head.forward(&x_reshaped)?;
+
+        let logits = logits.squeeze(0)?;
+
+        let candle_sampling = Self::to_candle_sampling(sampling);
+        let mut processor = LogitsProcessor::from_sampling(sampling.seed, candle_sampling);
+
+        let token = processor.sample(&logits).map_err(CandleError::Candle)?;
+
+        Ok(Some(SampleResult::new(token)))
+    }
 }
 
 impl rig_core::Partition for CandlePartition {
@@ -559,6 +649,15 @@ impl rig_core::Partition for CandlePartition {
 
     fn release_request_cache(&self, _request_id: rig_core::RequestId) {
         self.clear_kv_cache();
+    }
+
+    fn forward_sample(
+        &mut self,
+        input: Activation,
+        sampling: &SamplingParams,
+    ) -> std::result::Result<Option<SampleResult>, PartitionError> {
+        self.forward_sample_impl(input, sampling)
+            .map_err(|e| PartitionError::ForwardFailed(e.to_string()))
     }
 }
 

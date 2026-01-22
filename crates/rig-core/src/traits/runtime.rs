@@ -4,7 +4,7 @@ use crate::error::{PartitionError, RuntimeError};
 use crate::traits::cache::KvCache;
 use crate::types::{
     Activation, LoadedPartition, MemoryUsage, ModelId, ModelSpec, PartitionSpec, RequestId,
-    RuntimeCapabilities, RuntimeId,
+    RuntimeCapabilities, RuntimeId, SampleResult, SamplingParams,
 };
 
 pub trait Runtime: Send + Sync {
@@ -30,4 +30,13 @@ pub trait Partition: Send + Sync {
         None
     }
     fn release_request_cache(&self, _request_id: RequestId) {}
+
+    fn forward_sample(
+        &mut self,
+        input: Activation,
+        sampling: &SamplingParams,
+    ) -> Result<Option<SampleResult>, PartitionError> {
+        let _ = (input, sampling);
+        Ok(None)
+    }
 }

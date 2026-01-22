@@ -23,6 +23,7 @@ pub use types::{
     ModelId, ModelInfo, ModelSpec, Neighbors, NodeCapabilities, NodeId, NodeInfo, NodeMetrics,
     NodeStatus, NodeStatusInfo, PartitionSpec, PeerAddress, PipelineConfig, PipelineId,
     PipelineInfoResponse, Priority, RegisterRequest, RegisterResponse, RequestContext, RequestId,
-    RuntimeCapabilities, RuntimeId, RuntimeType, Shape, StageId, StageInfoResponse,
-    StopReasonProto, TenantId, TensorData, UsageStats, WorkResult, WorkerMessage,
+    RuntimeCapabilities, RuntimeId, RuntimeType, SampleResult, SamplingParams, Shape, StageId,
+    StageInfoResponse, StopChecker, StopReason, StopReasonProto, TenantId, TensorData, UsageStats,
+    WorkResult, WorkerMessage,
 };

@@ -4,6 +4,8 @@ pub mod partition;
 pub mod pipeline;
 pub mod protocol;
 pub mod request;
+pub mod sampling;
+pub mod stop;
 pub mod tensor;
 
 pub use id::*;
@@ -12,4 +14,6 @@ pub use partition::*;
 pub use pipeline::*;
 pub use protocol::*;
 pub use request::*;
+pub use sampling::*;
+pub use stop::*;
 pub use tensor::*;

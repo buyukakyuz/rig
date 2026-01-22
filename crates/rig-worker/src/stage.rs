@@ -4,9 +4,8 @@ use std::time::Instant;
 
 use rig_core::{
     Activation, Assignment, GenerationDecision, GenerationParams, LoadedPartition, Partition,
-    RequestId, StopReasonProto, Tokenizer,
+    RequestId, SamplingParams, StopChecker, StopReason, StopReasonProto, Tokenizer,
 };
-use rig_inference::{Sampler, StopChecker, StopReason};
 use tokio::sync::{Mutex, broadcast};
 use tracing::{debug, info, instrument, warn};
 
@@ -15,7 +14,7 @@ use crate::error::WorkerError;
 use crate::peer_connection::PeerConnection;
 
 struct MultiStageGenerationState {
-    sampler: Sampler,
+    sampling_params: SamplingParams,
     stop_checker: StopChecker,
     generated_tokens: Vec<u32>,
     prompt_tokens: usize,
@@ -24,17 +23,13 @@ struct MultiStageGenerationState {
 }
 
 impl MultiStageGenerationState {
-    fn new(
-        params: &GenerationParams,
-        eos_token: u32,
-        prompt_tokens: usize,
-        seed: Option<u64>,
-    ) -> Self {
-        let sampler = Sampler::new(params, seed);
+    fn new(params: &GenerationParams, eos_token: u32, prompt_tokens: usize, seed: u64) -> Self {
+        let sampling_params =
+            SamplingParams::new(params.temperature, params.top_p, params.top_k, seed);
         let stop_checker = StopChecker::new(eos_token, params.max_tokens);
 
         Self {
-            sampler,
+            sampling_params,
             stop_checker,
             generated_tokens: Vec::new(),
             prompt_tokens,
@@ -43,8 +38,7 @@ impl MultiStageGenerationState {
         }
     }
 
-    fn sample_and_check(&mut self, logits: &[f32]) -> GenerationDecision {
-        let token = self.sampler.sample(logits);
+    fn record_token(&mut self, token: u32) -> GenerationDecision {
         self.generated_tokens.push(token);
 
         if self.time_to_first_token_ms.is_none() {
@@ -239,7 +233,8 @@ impl PipelineStage {
 
             let prompt_tokens = activation.metadata.positions.len();
 
-            let state = MultiStageGenerationState::new(&params, eos_token, prompt_tokens, None);
+            let seed = rand::random::<u64>();
+            let state = MultiStageGenerationState::new(&params, eos_token, prompt_tokens, seed);
             e.insert(state);
 
             debug!(
@@ -250,28 +245,33 @@ impl PipelineStage {
             );
         }
 
-        let output = self.forward(activation)?;
-        let logits = extract_logits(&output);
+        let state = self.generation_states.get(&request_id).ok_or_else(|| {
+            WorkerError::partition_processing("Generation state not found for request")
+        })?;
+        let sampling_params = state.sampling_params.clone();
 
-        if logits.is_empty() {
-            return Err(WorkerError::partition_processing(
-                "Multi-stage last stage: forward pass returned no logits",
-            ));
-        }
+        let sample_result = self
+            .partition
+            .forward_sample(activation, &sampling_params)?
+            .ok_or_else(|| {
+                WorkerError::partition_processing(
+                    "Multi-stage last stage: forward_sample returned None (not final stage?)",
+                )
+            })?;
 
         let state = self.generation_states.get_mut(&request_id).ok_or_else(|| {
             WorkerError::partition_processing("Generation state not found for request")
         })?;
 
-        let decision = state.sample_and_check(&logits);
+        let decision = state.record_token(sample_result.token);
 
         let is_finished = matches!(decision, GenerationDecision::Finish { .. });
 
         debug!(
             %request_id,
-            logits_len = logits.len(),
+            token = sample_result.token,
             is_finished,
-            "Multi-stage last stage: sampled token locally"
+            "Multi-stage last stage: sampled token on GPU"
         );
 
         let coord_client = self.coord_client.as_ref().ok_or_else(|| {
@@ -360,53 +360,6 @@ impl PipelineStage {
 
         info!("Stage processing loop stopped");
         Ok(())
-    }
-}
-
-fn extract_logits(activation: &Activation) -> Vec<f32> {
-    use rig_core::DType;
-
-    let bytes = activation.data.as_bytes();
-    let dtype = activation.dtype();
-
-    match dtype {
-        DType::F32 => {
-            if bytes.len() < 4 {
-                return Vec::new();
-            }
-            bytes
-                .chunks_exact(4)
-                .map(|chunk| {
-                    let arr: [u8; 4] = chunk.try_into().unwrap_or([0; 4]);
-                    f32::from_le_bytes(arr)
-                })
-                .collect()
-        }
-        DType::F16 => {
-            if bytes.len() < 2 {
-                return Vec::new();
-            }
-            bytes
-                .chunks_exact(2)
-                .map(|chunk| {
-                    let arr: [u8; 2] = chunk.try_into().unwrap_or([0; 2]);
-                    half::f16::from_le_bytes(arr).to_f32()
-                })
-                .collect()
-        }
-        DType::BF16 => {
-            if bytes.len() < 2 {
-                return Vec::new();
-            }
-            bytes
-                .chunks_exact(2)
-                .map(|chunk| {
-                    let arr: [u8; 2] = chunk.try_into().unwrap_or([0; 2]);
-                    half::bf16::from_le_bytes(arr).to_f32()
-                })
-                .collect()
-        }
-        _ => Vec::new(),
     }
 }
 

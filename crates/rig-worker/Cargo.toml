@@ -9,7 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 rig-core.workspace = true
-rig-inference.workspace = true
 rig-transport-tcp.workspace = true
 rig-message-bincode.workspace = true
 tokio.workspace = true
@@ -19,6 +18,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 uuid.workspace = true
+rand.workspace = true
 half = "2.4"
 
 [dev-dependencies]

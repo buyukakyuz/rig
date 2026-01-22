@@ -3,14 +3,13 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use tokio::sync::mpsc;
 use tracing::info;
 
 use rig_core::{
-    Activation, ActivationMetadata, Assignment, DType, GenerationParams, ModelId, Neighbors,
-    PartitionSpec, PipelineId, RequestId, Runtime, Shape, StageId, TensorData, UsageStats,
+    Activation, ActivationMetadata, Assignment, DType, ModelId, Neighbors, PartitionSpec,
+    PipelineId, RequestId, Runtime, SamplingParams, Shape, StageId, StopChecker, TensorData,
+    UsageStats,
 };
-use rig_inference::LocalGenerator;
 use rig_runtime_candle::{CandleRuntime, Device, memory::query_device_memory};
 use rig_worker::stage::PipelineStage;
 
@@ -142,6 +141,18 @@ fn create_benchmark_activation(request_id: RequestId, tokens: &[u32]) -> Activat
     Activation::new(data, shape, metadata)
 }
 
+fn create_decode_activation(request_id: RequestId, token: u32, position: usize) -> Activation {
+    let bytes = token.to_le_bytes().to_vec();
+    let data = TensorData::cpu(bytes, DType::I8);
+    let shape = Shape::new(vec![1, 1, 1]);
+
+    #[allow(clippy::cast_possible_truncation)]
+    let position_u32 = position as u32;
+    let metadata = ActivationMetadata::new(request_id, position_u32, vec![position_u32], false);
+
+    Activation::new(data, shape, metadata)
+}
+
 fn create_standalone_assignment(num_layers: usize) -> Assignment {
     Assignment::new(
         PipelineId::new(),
@@ -151,38 +162,62 @@ fn create_standalone_assignment(num_layers: usize) -> Assignment {
     )
 }
 
-async fn run_single_benchmark(
+fn run_single_benchmark(
     stage: &mut PipelineStage,
     tokens: &[u32],
     generation_length: usize,
     temperature: f32,
 ) -> Result<UsageStats> {
     let request_id = RequestId::new();
-    let activation = create_benchmark_activation(request_id, tokens);
-
-    let params = GenerationParams::new()
-        .with_max_tokens(generation_length)
-        .with_temperature(temperature)
-        .with_top_p(1.0);
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-
-    let drain_handle = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let prompt_tokens = tokens.len();
+    let start = Instant::now();
 
     let (partition, tokenizer) = stage.partition_and_tokenizer();
     let tokenizer = tokenizer.ok_or_else(|| anyhow::anyhow!("Model does not have a tokenizer"))?;
+    let eos_token = tokenizer.eos_token();
 
-    let mut generator = LocalGenerator::new(partition, tokenizer);
-    let usage = generator
-        .generate(activation, &params, tx)
-        .await
-        .map_err(|e| anyhow::anyhow!("Generation failed: {e}"))?;
+    let seed = rand::random::<u64>();
+    let sampling = SamplingParams::new(temperature, 1.0, 0, seed);
+    let stop_checker = StopChecker::new(eos_token, generation_length);
 
-    let _ = drain_handle.await;
+    let prefill_activation = create_benchmark_activation(request_id, tokens);
+    let first_result = partition
+        .forward_sample(prefill_activation, &sampling)?
+        .ok_or_else(|| anyhow::anyhow!("forward_sample returned None"))?;
+
+    let mut generated_tokens = vec![first_result.token];
+
+    #[allow(clippy::cast_possible_truncation)]
+    let time_to_first_token = start.elapsed().as_millis() as u64;
+
+    while stop_checker
+        .should_stop(&generated_tokens)
+        .should_continue()
+    {
+        let last_token = *generated_tokens
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("No tokens"))?;
+        let position = prompt_tokens + generated_tokens.len() - 1;
+
+        let decode_activation = create_decode_activation(request_id, last_token, position);
+        let result = partition
+            .forward_sample(decode_activation, &sampling)?
+            .ok_or_else(|| anyhow::anyhow!("forward_sample returned None"))?;
+
+        generated_tokens.push(result.token);
+    }
 
     partition.release_request_cache(request_id);
 
-    Ok(usage)
+    #[allow(clippy::cast_possible_truncation)]
+    let total_time = start.elapsed().as_millis() as u64;
+
+    Ok(UsageStats {
+        prompt_tokens,
+        completion_tokens: generated_tokens.len(),
+        total_time_ms: total_time,
+        time_to_first_token_ms: time_to_first_token,
+    })
 }
 
 fn compute_single_run_metrics(usage: &UsageStats, run_index: usize) -> SingleRunMetrics {
@@ -377,7 +412,7 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
 
     for i in 0..args.warmup {
         let warmup_tokens = generate_test_tokens(bos_token, vocab_size, 32);
-        run_single_benchmark(&mut stage, &warmup_tokens, 16, args.temperature).await?;
+        run_single_benchmark(&mut stage, &warmup_tokens, 16, args.temperature)?;
         if !args.quiet {
             eprintln!("  Warmup {}/{} complete", i + 1, args.warmup);
         }
@@ -399,8 +434,7 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
                 &test_tokens,
                 args.generation_length,
                 args.temperature,
-            )
-            .await?;
+            )?;
 
             let metrics = compute_single_run_metrics(&usage, run_idx);
 
