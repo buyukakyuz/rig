@@ -163,7 +163,7 @@ impl ConnectionHandler {
         &mut self,
         req: RegisterRequest,
     ) -> Result<CoordinatorMessage, CoordError> {
-        tracing::info!(
+        tracing::debug!(
             addr = %self.remote_addr,
             node_id = %req.node_info.node_id,
             num_models = req.available_models.len(),
@@ -534,13 +534,6 @@ impl ConnectionHandler {
             .state
             .create_pipeline(config, assignments, req.pipeline_id)
             .await?;
-
-        tracing::info!(
-            %pipeline_id,
-            num_stages,
-            num_layers,
-            "Auto-partitioned pipeline created"
-        );
 
         Ok(CliResponse::PipelineCreated { pipeline_id })
     }

@@ -619,7 +619,7 @@ fn run_warmup(partition: &dyn Partition) -> Result<(), WorkerError> {
     }
 
     let start = Instant::now();
-    info!("Running warm-up pass to initialize KV cache and compile GPU kernels");
+    info!("Running warm-up pass");
 
     let warmup_token: u32 = 1;
     let bytes = warmup_token.to_le_bytes().to_vec();

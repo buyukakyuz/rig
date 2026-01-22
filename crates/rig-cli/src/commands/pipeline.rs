@@ -127,6 +127,7 @@ async fn run_pipeline_create(client: &CliClient, args: CreatePipelineArgs) -> Re
         .context("Invalid pipeline ID (expected UUID)")?;
 
     let is_manual_mode = !args.manual_stages.is_empty();
+    tracing::info!("Creating pipeline");
 
     if is_manual_mode {
         let model_path = args
@@ -148,12 +149,6 @@ async fn run_pipeline_create(client: &CliClient, args: CreatePipelineArgs) -> Re
 
         let config = PipelineConfig::new(model_id.clone(), model_path, num_layers, dtype);
 
-        tracing::info!(
-            model = %model_id,
-            stages = assignments.len(),
-            "Creating pipeline (manual mode)"
-        );
-
         let created_pipeline_id = client
             .create_pipeline(config, assignments, pipeline_id)
             .await?;
@@ -171,13 +166,6 @@ async fn run_pipeline_create(client: &CliClient, args: CreatePipelineArgs) -> Re
         if let Some(pid) = pipeline_id {
             req = req.with_pipeline_id(pid);
         }
-
-        tracing::info!(
-            model = %args.model_name,
-            version = %args.model_version,
-            stages = ?args.stages,
-            "Creating pipeline (auto-partition mode)"
-        );
 
         let created_pipeline_id = client.create_pipeline_auto(req).await?;
 

@@ -73,16 +73,6 @@ pub async fn run_worker(args: WorkerArgs) -> Result<()> {
         model_paths.insert(model_id, path);
     }
 
-    let compiled_runtime = crate::runtime::runtime_name();
-    if args.runtime.to_lowercase() != compiled_runtime {
-        tracing::info!(
-            requested = %args.runtime,
-            compiled = %compiled_runtime,
-            "Using compiled runtime '{}'",
-            compiled_runtime
-        );
-    }
-
     let heartbeat_interval = Duration::from_secs(args.heartbeat_interval);
 
     let config = WorkerConfig::default()

@@ -10,7 +10,3 @@ pub fn create_runtime(device: &str) -> Result<impl Runtime + 'static> {
     }
     .map_err(Into::into)
 }
-
-pub const fn runtime_name() -> &'static str {
-    "candle"
-}
