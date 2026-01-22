@@ -1,4 +1,4 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SamplingParams {
     pub temperature: f32,
     pub top_p: f32,

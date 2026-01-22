@@ -33,6 +33,11 @@ fn pod_vec_to_bytes<T: bytemuck::Pod>(mut v: Vec<T>) -> Vec<u8> {
     unsafe { Vec::from_raw_parts(ptr, len, cap) }
 }
 
+struct CachedSampler {
+    processor: LogitsProcessor,
+    params: SamplingParams,
+}
+
 pub struct CandlePartition {
     spec: PartitionSpec,
     config: TransformerConfig,
@@ -42,6 +47,7 @@ pub struct CandlePartition {
     lm_head: Option<Linear>,
     rope_cache: RopeCache,
     kv_cache: Mutex<CandleKvCache>,
+    cached_sampler: Mutex<Option<CachedSampler>>,
     device: Device,
     dtype: DType,
     memory_usage: MemoryUsage,
@@ -169,6 +175,7 @@ impl CandlePartition {
             lm_head,
             rope_cache,
             kv_cache,
+            cached_sampler: Mutex::new(None),
             device: device.clone(),
             dtype,
             memory_usage,
@@ -417,6 +424,9 @@ impl CandlePartition {
         if let Ok(mut cache) = self.kv_cache.lock() {
             cache.clear();
         }
+        if let Ok(mut sampler) = self.cached_sampler.lock() {
+            *sampler = None;
+        }
     }
 
     pub fn embed(&self, tokens: &Tensor) -> Result<Tensor> {
@@ -603,8 +613,22 @@ impl CandlePartition {
 
         let logits = logits.squeeze(0)?;
 
-        let candle_sampling = Self::to_candle_sampling(sampling);
-        let mut processor = LogitsProcessor::from_sampling(sampling.seed, candle_sampling);
+        let mut cached = self.cached_sampler.lock().map_err(|e| {
+            CandleError::Candle(candle_core::Error::Msg(format!("Sampler lock failed: {e}")))
+        })?;
+
+        let processor = match cached.as_mut() {
+            Some(c) if c.params == *sampling => &mut c.processor,
+            _ => {
+                let candle_sampling = Self::to_candle_sampling(sampling);
+                let new_processor = LogitsProcessor::from_sampling(sampling.seed, candle_sampling);
+                *cached = Some(CachedSampler {
+                    processor: new_processor,
+                    params: sampling.clone(),
+                });
+                &mut cached.as_mut().unwrap().processor
+            }
+        };
 
         let token = processor.sample(&logits).map_err(CandleError::Candle)?;
 
