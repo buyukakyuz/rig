@@ -353,7 +353,10 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         eprintln!("Using device: {device_type}");
     }
 
-    let (baseline_free, device_total) = query_device_memory(&device).unwrap_or((0, 0));
+    let (baseline_free, device_total) = query_device_memory(&device).unwrap_or_else(|e| {
+        tracing::warn!("Failed to query device memory: {e}");
+        (0, 0)
+    });
 
     if !args.quiet && device_total > 0 {
         eprintln!(
@@ -373,7 +376,12 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         .model
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("model");
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not extract model name from path: {}",
+                args.model.display()
+            )
+        })?;
 
     let model_spec = runtime
         .discover_model(ModelId::new(model_name, "v1"), &args.model)
@@ -386,7 +394,10 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         .await
         .context("Failed to load model partition")?;
 
-    let (post_load_free, _) = query_device_memory(&device).unwrap_or((0, 0));
+    let (post_load_free, _) = query_device_memory(&device).unwrap_or_else(|e| {
+        tracing::warn!("Failed to query device memory after load: {e}");
+        (0, 0)
+    });
     let model_memory = baseline_free.saturating_sub(post_load_free);
 
     if !args.quiet {
@@ -501,7 +512,12 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
                 .model
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("model");
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Could not extract model name from path: {}",
+                        args.model.display()
+                    )
+                })?;
 
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

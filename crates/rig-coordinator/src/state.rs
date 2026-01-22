@@ -269,11 +269,20 @@ impl CoordinatorState {
         let pipeline_id = pipeline_id.unwrap_or_default();
         let num_stages = stage_assignments.len();
 
+        if num_stages > u32::MAX as usize {
+            return Err(CoordError::InvalidRequest(format!(
+                "Too many stages: {} exceeds maximum of {}",
+                num_stages,
+                u32::MAX
+            )));
+        }
+
+        #[allow(clippy::cast_possible_truncation)]
         let stages: Vec<StageRecord> = stage_assignments
             .iter()
             .enumerate()
             .map(|(idx, (node_id, layer_range))| {
-                let stage_idx: u32 = idx.try_into().unwrap_or(u32::MAX);
+                let stage_idx = idx as u32;
                 StageRecord {
                     stage_id: StageId::new(stage_idx),
                     node_id: *node_id,
@@ -286,36 +295,33 @@ impl CoordinatorState {
         {
             let mut assignments = self.assignments.write().await;
 
+            #[allow(clippy::cast_possible_truncation)]
             for (idx, (node_id, layer_range)) in stage_assignments.iter().enumerate() {
                 let prev = if idx > 0 {
                     let prev_node_id = stage_assignments[idx - 1].0;
-                    Some(PeerAddress::new(
-                        prev_node_id,
-                        node_addresses
-                            .get(&prev_node_id)
-                            .cloned()
-                            .unwrap_or_default(),
-                    ))
+                    let addresses = node_addresses
+                        .get(&prev_node_id)
+                        .ok_or(CoordError::NodeNotFound(prev_node_id))?
+                        .clone();
+                    Some(PeerAddress::new(prev_node_id, addresses))
                 } else {
                     None
                 };
 
                 let next = if idx < num_stages - 1 {
                     let next_node_id = stage_assignments[idx + 1].0;
-                    Some(PeerAddress::new(
-                        next_node_id,
-                        node_addresses
-                            .get(&next_node_id)
-                            .cloned()
-                            .unwrap_or_default(),
-                    ))
+                    let addresses = node_addresses
+                        .get(&next_node_id)
+                        .ok_or(CoordError::NodeNotFound(next_node_id))?
+                        .clone();
+                    Some(PeerAddress::new(next_node_id, addresses))
                 } else {
                     None
                 };
 
                 let neighbors = Neighbors { prev, next };
 
-                let stage_idx: u32 = idx.try_into().unwrap_or(u32::MAX);
+                let stage_idx = idx as u32;
                 let assignment = Assignment::new(
                     pipeline_id,
                     StageId::new(stage_idx),

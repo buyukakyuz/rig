@@ -11,6 +11,16 @@ use crate::error::WorkerError;
 
 const HEADER_SIZE: usize = 64;
 
+fn parse_header_bytes<const N: usize>(slice: &[u8]) -> Result<[u8; N], WorkerError> {
+    slice.try_into().map_err(|_| {
+        WorkerError::serialization(format!(
+            "Header parse failed: expected {} bytes, got {}",
+            N,
+            slice.len()
+        ))
+    })
+}
+
 pub struct PeerConnection {
     transport: TcpTransport,
     peer_node_id: NodeId,
@@ -175,24 +185,24 @@ fn deserialize_activation(frame: &[u8]) -> Result<Activation, WorkerError> {
     uuid_bytes.copy_from_slice(&header[0..16]);
     let request_id = RequestId::from_uuid(uuid::Uuid::from_bytes(uuid_bytes));
 
-    let sequence_num = u32::from_le_bytes(header[16..20].try_into().unwrap_or([0; 4]));
+    let sequence_num = u32::from_le_bytes(parse_header_bytes(&header[16..20])?);
 
-    let batch_size = u32::from_le_bytes(header[20..24].try_into().unwrap_or([1; 4])) as usize;
+    let batch_size = u32::from_le_bytes(parse_header_bytes(&header[20..24])?) as usize;
 
-    let seq_len = u32::from_le_bytes(header[24..28].try_into().unwrap_or([1; 4])) as usize;
+    let seq_len = u32::from_le_bytes(parse_header_bytes(&header[24..28])?) as usize;
 
-    let hidden_dim = u32::from_le_bytes(header[28..32].try_into().unwrap_or([1; 4])) as usize;
+    let hidden_dim = u32::from_le_bytes(parse_header_bytes(&header[28..32])?) as usize;
 
     let dtype = u8_to_dtype(header[32]);
 
     let is_prefill = header[33] != 0;
 
     #[allow(clippy::cast_possible_truncation)]
-    let data_len = u64::from_le_bytes(header[36..44].try_into().unwrap_or([0; 8])) as usize;
+    let data_len = u64::from_le_bytes(parse_header_bytes(&header[36..44])?) as usize;
 
-    let expected_checksum = u32::from_le_bytes(header[44..48].try_into().unwrap_or([0; 4]));
+    let expected_checksum = u32::from_le_bytes(parse_header_bytes(&header[44..48])?);
 
-    let pos_count = u32::from_le_bytes(header[56..60].try_into().unwrap_or([0; 4])) as usize;
+    let pos_count = u32::from_le_bytes(parse_header_bytes(&header[56..60])?) as usize;
 
     let positions_size = pos_count * 4;
     let expected_size = HEADER_SIZE + positions_size + data_len;
@@ -209,7 +219,10 @@ fn deserialize_activation(frame: &[u8]) -> Result<Activation, WorkerError> {
     let positions_end = positions_start + positions_size;
     let positions: Vec<u32> = frame[positions_start..positions_end]
         .chunks_exact(4)
-        .map(|b| u32::from_le_bytes(b.try_into().unwrap_or([0; 4])))
+        .map(|b| {
+            let arr: [u8; 4] = [b[0], b[1], b[2], b[3]];
+            u32::from_le_bytes(arr)
+        })
         .collect();
 
     let data = frame[positions_end..positions_end + data_len].to_vec();

@@ -39,6 +39,8 @@ pub struct CandlePartition {
     chat_template: Option<String>,
     eos_token_str: String,
     add_bos_token: bool,
+    bos_token_id: u32,
+    eos_token_id: u32,
 }
 
 impl CandlePartition {
@@ -63,9 +65,15 @@ impl CandlePartition {
 
         let tokenizer_config_path = model_path.join("tokenizer_config.json");
         let add_bos_token = if tokenizer_config_path.exists() {
-            TokenizerConfig::from_file(&tokenizer_config_path)
-                .map(|c| c.add_bos_token)
-                .unwrap_or(true)
+            match TokenizerConfig::from_file(&tokenizer_config_path) {
+                Ok(c) => c.add_bos_token,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse tokenizer_config.json, defaulting add_bos_token to true: {e}"
+                    );
+                    true
+                }
+            }
         } else {
             true
         };
@@ -139,6 +147,22 @@ impl CandlePartition {
 
         let memory_usage = Self::estimate_memory(&config, spec, is_first, is_last);
 
+        let bos_token_id = config.bos_token_id.ok_or_else(|| {
+            CandleError::Candle(candle_core::Error::Msg(
+                "BOS token ID not specified in model config".to_string(),
+            ))
+        })?;
+
+        let eos_token_id = config
+            .eos_token_id
+            .as_ref()
+            .and_then(|ids| ids.to_vec().first().copied())
+            .ok_or_else(|| {
+                CandleError::Candle(candle_core::Error::Msg(
+                    "EOS token ID not specified in model config".to_string(),
+                ))
+            })?;
+
         Ok(Self {
             spec: spec.clone(),
             config,
@@ -155,6 +179,8 @@ impl CandlePartition {
             chat_template,
             eos_token_str,
             add_bos_token,
+            bos_token_id,
+            eos_token_id,
         })
     }
 
@@ -222,8 +248,15 @@ impl CandlePartition {
                         let eos = config_json
                             .get("eos_token")
                             .and_then(serde_json::Value::as_str)
-                            .unwrap_or("</s>")
-                            .to_string();
+                            .map_or_else(
+                                || {
+                                    tracing::warn!(
+                                        "eos_token not found in tokenizer_config.json, defaulting to </s>"
+                                    );
+                                    "</s>".to_string()
+                                },
+                                String::from,
+                            );
                         (template, eos)
                     }
                     Err(e) => {
@@ -443,8 +476,16 @@ impl CandlePartition {
         let bytes = activation.as_bytes();
         let dims = activation.shape.dims();
 
-        let batch_size = dims.first().copied().unwrap_or(1);
-        let seq_len = dims.get(1).copied().unwrap_or(bytes.len() / 4);
+        let batch_size = dims.first().copied().ok_or_else(|| {
+            CandleError::Candle(candle_core::Error::Msg(
+                "Activation shape missing batch dimension".to_string(),
+            ))
+        })?;
+        let seq_len = dims.get(1).copied().ok_or_else(|| {
+            CandleError::Candle(candle_core::Error::Msg(
+                "Activation shape missing sequence dimension".to_string(),
+            ))
+        })?;
 
         let tokens: Vec<u32> = bytes
             .chunks_exact(4)
@@ -462,16 +503,13 @@ impl CandlePartition {
     }
 
     #[must_use]
-    pub fn bos_token(&self) -> u32 {
-        self.config.bos_token_id.unwrap_or(1)
+    pub const fn bos_token(&self) -> u32 {
+        self.bos_token_id
     }
 
     #[must_use]
-    pub fn eos_token(&self) -> u32 {
-        self.config
-            .eos_token_id
-            .as_ref()
-            .map_or(2, |eos| eos.to_vec()[0])
+    pub const fn eos_token(&self) -> u32 {
+        self.eos_token_id
     }
 
     pub fn tokenize(&self, text: &str, add_bos: bool) -> Result<Vec<u32>> {
@@ -517,6 +555,7 @@ impl CandlePartition {
             .map_err(|e| CandleError::TokenizationFailed(e.to_string()))
     }
 
+    #[must_use]
     pub fn extract_tokenizer(&self) -> crate::tokenizer::CandleTokenizer {
         crate::tokenizer::CandleTokenizer::new(
             self.tokenizer.clone(),

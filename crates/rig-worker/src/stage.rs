@@ -220,7 +220,14 @@ impl PipelineStage {
         activation: Activation,
     ) -> Result<(), WorkerError> {
         let request_id = activation.metadata.request_id;
-        let eos_token = self.tokenizer().map_or(2, Tokenizer::eos_token);
+        let eos_token = self
+            .tokenizer()
+            .ok_or_else(|| {
+                WorkerError::config(
+                    "Tokenizer required for multi-stage generation but not available",
+                )
+            })?
+            .eos_token();
 
         if let std::collections::hash_map::Entry::Vacant(e) =
             self.generation_states.entry(request_id)

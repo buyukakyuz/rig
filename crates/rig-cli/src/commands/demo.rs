@@ -67,11 +67,12 @@ fn get_model_name(path: &Path) -> Result<String> {
         );
     }
 
-    Ok(path
-        .file_name()
+    path.file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("model")
-        .to_string())
+        .map(String::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Could not extract model name from path: {}", path.display())
+        })
 }
 
 struct DemoCluster {

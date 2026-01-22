@@ -11,6 +11,7 @@ use rig_message_bincode::BincodeCodec;
 use rig_transport_tcp::TcpTransport;
 use tokio::time::timeout;
 
+use crate::config::DEFAULT_IDLE_TIMEOUT_MS;
 use crate::state::CoordinatorState;
 
 pub struct ConnectionHandler {
@@ -375,7 +376,7 @@ impl ConnectionHandler {
         use tokio::sync::{mpsc, oneshot};
 
         let request_id = inference_request.request_id;
-        let idle_timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000));
+        let idle_timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_IDLE_TIMEOUT_MS));
 
         let (token_tx, mut token_rx) = mpsc::unbounded_channel::<String>();
         let (complete_tx, complete_rx) = oneshot::channel::<rig_core::UsageStats>();

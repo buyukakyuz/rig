@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 60_000;
+
 #[derive(Debug, Clone)]
 pub struct CoordinatorConfig {
     pub listen_addr: SocketAddr,

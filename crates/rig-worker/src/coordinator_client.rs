@@ -63,7 +63,10 @@ impl CoordinatorClient {
                 Ok(r.node_id)
             }
             CoordinatorMessage::RegisterResponse(r) => Err(WorkerError::RegistrationRejected(
-                r.reason.unwrap_or_default(),
+                r.reason.unwrap_or_else(|| {
+                    tracing::warn!("Registration rejected without reason provided");
+                    "Unknown reason".to_string()
+                }),
             )),
             CoordinatorMessage::Error { code, message } => {
                 Err(WorkerError::CoordinatorError { code, message })
