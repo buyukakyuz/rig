@@ -64,6 +64,10 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub chat: bool,
 
+    /// Random seed for reproducible generation.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
     /// Request timeout in seconds.
     #[arg(long, default_value = "60")]
     pub timeout: u64,
@@ -107,6 +111,10 @@ fn build_generation_params(args: &GenerateArgs) -> GenerationParams {
 
     if args.chat {
         params = params.with_chat_template(true);
+    }
+
+    if let Some(seed) = args.seed {
+        params = params.with_seed(seed);
     }
 
     params

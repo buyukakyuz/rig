@@ -90,6 +90,7 @@ pub struct GenerationParams {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub use_chat_template: bool,
+    pub seed: Option<u64>,
 }
 
 impl GenerationParams {
@@ -139,6 +140,12 @@ impl GenerationParams {
         self.use_chat_template = use_chat_template;
         self
     }
+
+    #[must_use]
+    pub const fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
 }
 
 impl Default for GenerationParams {
@@ -151,6 +158,7 @@ impl Default for GenerationParams {
             stop_sequences: Vec::new(),
             system_prompt: None,
             use_chat_template: false,
+            seed: None,
         }
     }
 }

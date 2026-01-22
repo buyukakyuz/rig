@@ -48,6 +48,10 @@ pub struct BenchmarkArgs {
     #[arg(long, default_value = "0.0")]
     pub temperature: f32,
 
+    /// Random seed for reproducible benchmarks.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
     /// Suppress progress output.
     #[arg(long)]
     pub quiet: bool,
@@ -167,6 +171,7 @@ fn run_single_benchmark(
     tokens: &[u32],
     generation_length: usize,
     temperature: f32,
+    seed: Option<u64>,
 ) -> Result<UsageStats> {
     let request_id = RequestId::new();
     let prompt_tokens = tokens.len();
@@ -176,7 +181,7 @@ fn run_single_benchmark(
     let tokenizer = tokenizer.ok_or_else(|| anyhow::anyhow!("Model does not have a tokenizer"))?;
     let eos_token = tokenizer.eos_token();
 
-    let seed = rand::random::<u64>();
+    let seed = seed.unwrap_or_else(rand::random::<u64>);
     let sampling = SamplingParams::new(temperature, 1.0, 0, seed);
     let stop_checker = StopChecker::new(eos_token, generation_length);
 
@@ -423,7 +428,7 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
 
     for i in 0..args.warmup {
         let warmup_tokens = generate_test_tokens(bos_token, vocab_size, 32);
-        run_single_benchmark(&mut stage, &warmup_tokens, 16, args.temperature)?;
+        run_single_benchmark(&mut stage, &warmup_tokens, 16, args.temperature, args.seed)?;
         if !args.quiet {
             eprintln!("  Warmup {}/{} complete", i + 1, args.warmup);
         }
@@ -445,6 +450,7 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
                 &test_tokens,
                 args.generation_length,
                 args.temperature,
+                args.seed,
             )?;
 
             let metrics = compute_single_run_metrics(&usage, run_idx);

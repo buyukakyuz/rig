@@ -45,6 +45,10 @@ pub struct DemoArgs {
     #[arg(long, default_value = "0.9")]
     pub top_p: f32,
 
+    /// Random seed for reproducible generation.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
     /// Coordinator port.
     #[arg(long, default_value = "50051")]
     pub coordinator_port: u16,
@@ -243,6 +247,7 @@ struct GenerationConfig {
     max_tokens: usize,
     temperature: f32,
     top_p: f32,
+    seed: Option<u64>,
 }
 
 async fn run_interactive_chat(
@@ -311,12 +316,16 @@ async fn run_interactive_chat(
 
         let client = CliClient::connect(coordinator_addr).await?;
 
-        let params = GenerationParams::new()
+        let mut params = GenerationParams::new()
             .with_max_tokens(config.max_tokens)
             .with_temperature(config.temperature)
             .with_top_p(config.top_p)
             .with_system_prompt(&config.system_prompt)
             .with_chat_template(true);
+
+        if let Some(seed) = config.seed {
+            params = params.with_seed(seed);
+        }
 
         let result = client
             .generate(
@@ -384,6 +393,7 @@ pub async fn run_demo(args: DemoArgs) -> Result<()> {
             max_tokens: args.max_tokens,
             temperature: args.temperature,
             top_p: args.top_p,
+            seed: args.seed,
         };
         tokio::select! {
             result = run_interactive_chat(cluster.coordinator_addr, pipeline_id, &gen_config) => {

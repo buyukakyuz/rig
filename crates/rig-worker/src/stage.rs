@@ -240,7 +240,7 @@ impl PipelineStage {
 
             let prompt_tokens = activation.metadata.positions.len();
 
-            let seed = rand::random::<u64>();
+            let seed = params.seed.unwrap_or_else(rand::random::<u64>);
             let state = MultiStageGenerationState::new(&params, eos_token, prompt_tokens, seed);
             e.insert(state);
 
