@@ -10,6 +10,7 @@ pub enum DType {
     BF16,
     I8,
     I4,
+    Q4K,
 }
 
 impl DType {
@@ -20,6 +21,7 @@ impl DType {
             Self::F16 | Self::BF16 => num_elements * 2,
             Self::I8 => num_elements,
             Self::I4 => num_elements.div_ceil(2),
+            Self::Q4K => (num_elements / 256) * 144,
         }
     }
 }
@@ -262,6 +264,9 @@ mod tests {
         assert_eq!(DType::I8.size_bytes_for_elements(100), 100);
         assert_eq!(DType::I4.size_bytes_for_elements(100), 50);
         assert_eq!(DType::I4.size_bytes_for_elements(101), 51);
+        assert_eq!(DType::Q4K.size_bytes_for_elements(256), 144);
+        assert_eq!(DType::Q4K.size_bytes_for_elements(512), 288);
+        assert_eq!(DType::Q4K.size_bytes_for_elements(1024), 576);
     }
 
     #[test]

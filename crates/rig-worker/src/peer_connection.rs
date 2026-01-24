@@ -248,6 +248,7 @@ const fn dtype_to_u8(dtype: DType) -> u8 {
         DType::BF16 => 2,
         DType::I8 => 3,
         DType::I4 => 4,
+        DType::Q4K => 5,
     }
 }
 
@@ -257,6 +258,7 @@ const fn u8_to_dtype(value: u8) -> DType {
         2 => DType::BF16,
         3 => DType::I8,
         4 => DType::I4,
+        5 => DType::Q4K,
         _ => DType::F32,
     }
 }
@@ -329,7 +331,14 @@ mod tests {
 
     #[test]
     fn dtype_conversion_roundtrip() {
-        for dtype in [DType::F32, DType::F16, DType::BF16, DType::I8, DType::I4] {
+        for dtype in [
+            DType::F32,
+            DType::F16,
+            DType::BF16,
+            DType::I8,
+            DType::I4,
+            DType::Q4K,
+        ] {
             let encoded = dtype_to_u8(dtype);
             let decoded = u8_to_dtype(encoded);
             assert_eq!(dtype, decoded);

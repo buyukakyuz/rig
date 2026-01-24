@@ -1,6 +1,6 @@
 use candle_core::Device;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rig_core::LoadedPartition;
 use rig_core::error::RuntimeError;
@@ -8,7 +8,28 @@ use rig_core::types::{DType, ModelId, ModelSpec, PartitionSpec, RuntimeCapabilit
 
 use crate::config::TransformerConfig;
 use crate::error::CandleError;
-use crate::partition::CandlePartition;
+use crate::gguf_config::GgufConfig;
+use crate::partition::{CandlePartition, GgufPartition};
+use crate::tokenizer::CandleTokenizer;
+use crate::utils::load_tokenizer_config;
+
+#[derive(Debug, Clone)]
+pub enum ModelFormat {
+    Gguf(PathBuf),
+    Safetensor,
+}
+
+pub fn detect_model_format(path: &Path) -> ModelFormat {
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.extension().is_some_and(|ext| ext == "gguf") {
+                return ModelFormat::Gguf(entry_path);
+            }
+        }
+    }
+    ModelFormat::Safetensor
+}
 
 pub struct CandleRuntime {
     id: RuntimeId,
@@ -30,7 +51,7 @@ impl CandleRuntime {
             (0, 0)
         });
 
-        tracing::info!(
+        tracing::debug!(
             device = ?device,
             total_memory_bytes = total_memory,
             total_memory_gb = total_memory / (1024 * 1024 * 1024),
@@ -66,7 +87,7 @@ impl CandleRuntime {
         #[cfg(feature = "metal")]
         {
             if let Ok(device) = Device::new_metal(0) {
-                tracing::info!("Using Metal device");
+                tracing::debug!("Using Metal device");
                 return Ok(device);
             }
         }
@@ -74,12 +95,12 @@ impl CandleRuntime {
         #[cfg(feature = "cuda")]
         {
             if let Ok(device) = Device::new_cuda(0) {
-                tracing::info!("Using CUDA device 0");
+                tracing::debug!("Using CUDA device 0");
                 return Ok(device);
             }
         }
 
-        tracing::info!("Using CPU device");
+        tracing::debug!("Using CPU device");
         Ok(Device::Cpu)
     }
 
@@ -107,19 +128,37 @@ impl rig_core::Runtime for CandleRuntime {
     }
 
     fn discover_model(&self, model_id: ModelId, path: &Path) -> Result<ModelSpec, RuntimeError> {
-        let config = self
-            .load_config(path)
-            .map_err(|e| RuntimeError::LoadFailed {
-                model: path.display().to_string(),
-                reason: e.to_string(),
-            })?;
+        match detect_model_format(path) {
+            ModelFormat::Gguf(gguf_path) => {
+                let config =
+                    GgufConfig::from_file(&gguf_path).map_err(|e| RuntimeError::LoadFailed {
+                        model: path.display().to_string(),
+                        reason: e.to_string(),
+                    })?;
 
-        Ok(ModelSpec::new(
-            model_id,
-            path,
-            config.num_hidden_layers,
-            config.hidden_size,
-        ))
+                Ok(ModelSpec::new(
+                    model_id,
+                    path,
+                    config.num_hidden_layers,
+                    config.hidden_size,
+                ))
+            }
+            ModelFormat::Safetensor => {
+                let config = self
+                    .load_config(path)
+                    .map_err(|e| RuntimeError::LoadFailed {
+                        model: path.display().to_string(),
+                        reason: e.to_string(),
+                    })?;
+
+                Ok(ModelSpec::new(
+                    model_id,
+                    path,
+                    config.num_hidden_layers,
+                    config.hidden_size,
+                ))
+            }
+        }
     }
 
     fn load_partition(
@@ -128,10 +167,9 @@ impl rig_core::Runtime for CandleRuntime {
         partition: &PartitionSpec,
     ) -> impl std::future::Future<Output = Result<LoadedPartition, RuntimeError>> + Send {
         let model_path = model.path.clone();
-        let model_path_for_error = model_path.clone();
-        let total_layers = model.num_layers;
         let partition = partition.clone();
         let device = self.device.clone();
+        let total_layers = model.num_layers;
 
         async move {
             if partition.layer_range.end > total_layers {
@@ -141,31 +179,186 @@ impl rig_core::Runtime for CandleRuntime {
                 )));
             }
 
-            let partition_result = tokio::task::spawn_blocking(move || {
-                CandlePartition::load(&model_path, &partition, total_layers, &device)
+            match detect_model_format(&model_path) {
+                ModelFormat::Gguf(_) => {
+                    Self::load_gguf_partition(model_path, partition, device).await
+                }
+                ModelFormat::Safetensor => {
+                    Self::load_safetensor_partition(model_path, partition, total_layers, device)
+                        .await
+                }
+            }
+        }
+    }
+}
+
+impl CandleRuntime {
+    async fn load_gguf_partition(
+        model_path: PathBuf,
+        partition: PartitionSpec,
+        device: Device,
+    ) -> Result<LoadedPartition, RuntimeError> {
+        let model_path_for_tokenizer = model_path.clone();
+        let model_path_for_error = model_path.clone();
+
+        if partition.dtype != DType::F32 {
+            tracing::debug!(
+                requested_dtype = ?partition.dtype,
+                "GGUF models require F32 dtype, overriding requested dtype"
+            );
+        }
+
+        let partition_result: Result<GgufPartition, CandleError> =
+            tokio::task::spawn_blocking(move || {
+                GgufPartition::load_gguf(&model_path, &partition, &device)
             })
             .await
             .map_err(|e| RuntimeError::Internal(format!("Task join error: {e}")))?;
 
-            let candle_partition = partition_result.map_err(|e| match e {
-                CandleError::ModelNotFound(path) => RuntimeError::ModelNotFound(path),
-                CandleError::Config(config_err) => RuntimeError::LoadFailed {
-                    model: model_path_for_error.display().to_string(),
-                    reason: config_err.to_string(),
-                },
-                CandleError::NoSafetensorFiles(path) => RuntimeError::LoadFailed {
-                    model: path.display().to_string(),
-                    reason: "No safetensor files found".to_string(),
-                },
-                other => RuntimeError::Internal(other.to_string()),
+        let gguf_partition = partition_result.map_err(|e| match e {
+            CandleError::ModelNotFound(path) => RuntimeError::ModelNotFound(path),
+            CandleError::Config(config_err) => RuntimeError::LoadFailed {
+                model: model_path_for_error.display().to_string(),
+                reason: config_err.to_string(),
+            },
+            other => RuntimeError::Internal(other.to_string()),
+        })?;
+
+        let tokenizer = Self::load_tokenizer(&model_path_for_tokenizer)?;
+        let tokenizer: Box<dyn rig_core::Tokenizer> = Box::new(tokenizer);
+        let partition: Box<dyn rig_core::Partition> = Box::new(gguf_partition);
+
+        Ok(LoadedPartition::new(partition, Some(tokenizer)))
+    }
+
+    pub async fn load_gguf_partition_with_context(
+        model_path: PathBuf,
+        partition: PartitionSpec,
+        device: Device,
+        context_length: usize,
+    ) -> Result<LoadedPartition, RuntimeError> {
+        let model_path_for_tokenizer = model_path.clone();
+        let model_path_for_error = model_path.clone();
+
+        let partition_result: Result<GgufPartition, CandleError> =
+            tokio::task::spawn_blocking(move || {
+                GgufPartition::load_gguf_with_context(
+                    &model_path,
+                    &partition,
+                    &device,
+                    context_length,
+                )
+            })
+            .await
+            .map_err(|e| RuntimeError::Internal(format!("Task join error: {e}")))?;
+
+        let gguf_partition = partition_result.map_err(|e| match e {
+            CandleError::ModelNotFound(path) => RuntimeError::ModelNotFound(path),
+            CandleError::Config(config_err) => RuntimeError::LoadFailed {
+                model: model_path_for_error.display().to_string(),
+                reason: config_err.to_string(),
+            },
+            other => RuntimeError::Internal(other.to_string()),
+        })?;
+
+        let tokenizer = Self::load_tokenizer(&model_path_for_tokenizer)?;
+        let tokenizer: Box<dyn rig_core::Tokenizer> = Box::new(tokenizer);
+        let partition: Box<dyn rig_core::Partition> = Box::new(gguf_partition);
+
+        Ok(LoadedPartition::new(partition, Some(tokenizer)))
+    }
+
+    async fn load_safetensor_partition(
+        model_path: PathBuf,
+        partition: PartitionSpec,
+        total_layers: usize,
+        device: Device,
+    ) -> Result<LoadedPartition, RuntimeError> {
+        let model_path_for_tokenizer = model_path.clone();
+        let model_path_for_error = model_path.clone();
+
+        let partition_result: Result<CandlePartition, CandleError> =
+            tokio::task::spawn_blocking(move || {
+                CandlePartition::load_safetensor(&model_path, &partition, total_layers, &device)
+            })
+            .await
+            .map_err(|e| RuntimeError::Internal(format!("Task join error: {e}")))?;
+
+        let candle_partition = partition_result.map_err(|e| match e {
+            CandleError::ModelNotFound(path) => RuntimeError::ModelNotFound(path),
+            CandleError::Config(config_err) => RuntimeError::LoadFailed {
+                model: model_path_for_error.display().to_string(),
+                reason: config_err.to_string(),
+            },
+            CandleError::NoSafetensorFiles(path) => RuntimeError::LoadFailed {
+                model: path.display().to_string(),
+                reason: "No safetensor files found".to_string(),
+            },
+            other => RuntimeError::Internal(other.to_string()),
+        })?;
+
+        let tokenizer = Self::load_tokenizer(&model_path_for_tokenizer)?;
+        let tokenizer: Box<dyn rig_core::Tokenizer> = Box::new(tokenizer);
+        let partition: Box<dyn rig_core::Partition> = Box::new(candle_partition);
+
+        Ok(LoadedPartition::new(partition, Some(tokenizer)))
+    }
+
+    fn load_tokenizer(model_path: &Path) -> Result<CandleTokenizer, RuntimeError> {
+        use tokenizers::Tokenizer as HfTokenizer;
+
+        let tokenizer_path = model_path.join("tokenizer.json");
+        let tokenizer =
+            HfTokenizer::from_file(&tokenizer_path).map_err(|e| RuntimeError::LoadFailed {
+                model: model_path.display().to_string(),
+                reason: format!("Failed to load tokenizer: {e}"),
             })?;
 
-            let tokenizer: Box<dyn rig_core::Tokenizer> =
-                Box::new(candle_partition.extract_tokenizer());
-            let partition: Box<dyn rig_core::Partition> = Box::new(candle_partition);
+        let tokenizer_config =
+            load_tokenizer_config(model_path).map_err(|e| RuntimeError::LoadFailed {
+                model: model_path.display().to_string(),
+                reason: format!("Failed to load tokenizer config: {e}"),
+            })?;
 
-            Ok(LoadedPartition::new(partition, Some(tokenizer)))
+        let (bos_token_id, eos_token_id) = Self::get_token_ids(model_path)?;
+
+        Ok(CandleTokenizer::new(
+            tokenizer,
+            tokenizer_config.chat_template,
+            tokenizer_config.eos_token_str,
+            tokenizer_config.bos_token_str,
+            tokenizer_config.add_bos_token,
+            bos_token_id,
+            eos_token_id,
+        ))
+    }
+
+    fn get_token_ids(model_path: &Path) -> Result<(u32, u32), RuntimeError> {
+        let config_path = model_path.join("config.json");
+        if config_path.exists() {
+            if let Ok(config) = TransformerConfig::from_file(&config_path) {
+                if let (Some(bos), Some(eos_ids)) =
+                    (config.bos_token_id, config.eos_token_id.as_ref())
+                {
+                    if let Some(eos) = eos_ids.to_vec().first().copied() {
+                        return Ok((bos, eos));
+                    }
+                }
+            }
         }
+
+        if let ModelFormat::Gguf(gguf_path) = detect_model_format(model_path) {
+            if let Ok(config) = GgufConfig::from_file(&gguf_path) {
+                if let (Some(bos), Some(eos)) = (config.bos_token_id, config.eos_token_id) {
+                    return Ok((bos, eos));
+                }
+            }
+        }
+
+        Err(RuntimeError::LoadFailed {
+            model: model_path.display().to_string(),
+            reason: "Could not find BOS/EOS token IDs in model config".to_string(),
+        })
     }
 }
 

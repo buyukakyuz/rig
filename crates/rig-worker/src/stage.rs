@@ -1,75 +1,12 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
-use rig_core::{
-    Activation, Assignment, GenerationDecision, GenerationParams, LoadedPartition, Partition,
-    RequestId, SamplingParams, StopChecker, StopReason, StopReasonProto, Tokenizer,
-};
+use rig_core::{Activation, Assignment, LoadedPartition, Partition, SamplingParams, Tokenizer};
 use tokio::sync::{Mutex, broadcast};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::coordinator_client::CoordinatorClient;
 use crate::error::WorkerError;
 use crate::peer_connection::PeerConnection;
-
-struct MultiStageGenerationState {
-    sampling_params: SamplingParams,
-    stop_checker: StopChecker,
-    generated_tokens: Vec<u32>,
-    prompt_tokens: usize,
-    start_time: Instant,
-    time_to_first_token_ms: Option<u64>,
-}
-
-impl MultiStageGenerationState {
-    fn new(params: &GenerationParams, eos_token: u32, prompt_tokens: usize, seed: u64) -> Self {
-        let sampling_params =
-            SamplingParams::new(params.temperature, params.top_p, params.top_k, seed);
-        let stop_checker = StopChecker::new(eos_token, params.max_tokens);
-
-        Self {
-            sampling_params,
-            stop_checker,
-            generated_tokens: Vec::new(),
-            prompt_tokens,
-            start_time: Instant::now(),
-            time_to_first_token_ms: None,
-        }
-    }
-
-    fn record_token(&mut self, token: u32) -> GenerationDecision {
-        self.generated_tokens.push(token);
-
-        if self.time_to_first_token_ms.is_none() {
-            #[allow(clippy::cast_possible_truncation)]
-            let ttft = self.start_time.elapsed().as_millis() as u64;
-            self.time_to_first_token_ms = Some(ttft);
-        }
-
-        let stop_reason = self.stop_checker.should_stop(&self.generated_tokens);
-
-        if stop_reason.is_stopped() {
-            GenerationDecision::Finish {
-                generated_tokens: self.generated_tokens.clone(),
-                stop_reason: Self::convert_stop_reason(stop_reason),
-                time_to_first_token_ms: self.time_to_first_token_ms.unwrap_or(0),
-            }
-        } else {
-            #[allow(clippy::cast_possible_truncation)]
-            let position = (self.prompt_tokens + self.generated_tokens.len()) as u32;
-            GenerationDecision::Continue { token, position }
-        }
-    }
-
-    fn convert_stop_reason(reason: StopReason) -> StopReasonProto {
-        match reason {
-            StopReason::EosToken => StopReasonProto::EosToken,
-            StopReason::StopSequence(seq) => StopReasonProto::StopSequence(seq),
-            StopReason::MaxTokens | StopReason::NotStopped => StopReasonProto::MaxTokens,
-        }
-    }
-}
 
 pub struct PipelineStage {
     partition: Box<dyn Partition>,
@@ -78,7 +15,6 @@ pub struct PipelineStage {
     prev_peer: Option<PeerConnection>,
     next_peer: Option<PeerConnection>,
     coord_client: Option<Arc<Mutex<CoordinatorClient>>>,
-    generation_states: HashMap<RequestId, MultiStageGenerationState>,
 }
 
 impl PipelineStage {
@@ -97,7 +33,6 @@ impl PipelineStage {
             prev_peer,
             next_peer,
             coord_client: None,
-            generation_states: HashMap::new(),
         }
     }
 
@@ -116,7 +51,6 @@ impl PipelineStage {
             prev_peer,
             next_peer,
             coord_client: None,
-            generation_states: HashMap::new(),
         }
     }
 
@@ -220,42 +154,15 @@ impl PipelineStage {
         activation: Activation,
     ) -> Result<(), WorkerError> {
         let request_id = activation.metadata.request_id;
-        let eos_token = self
-            .tokenizer()
-            .ok_or_else(|| {
-                WorkerError::config(
-                    "Tokenizer required for multi-stage generation but not available",
-                )
-            })?
-            .eos_token();
 
-        if let std::collections::hash_map::Entry::Vacant(e) =
-            self.generation_states.entry(request_id)
-        {
-            let params = activation
-                .metadata
-                .generation_params
-                .clone()
-                .unwrap_or_default();
-
-            let prompt_tokens = activation.metadata.positions.len();
-
-            let seed = params.seed.unwrap_or_else(rand::random::<u64>);
-            let state = MultiStageGenerationState::new(&params, eos_token, prompt_tokens, seed);
-            e.insert(state);
-
-            debug!(
-                %request_id,
-                prompt_tokens,
-                eos_token,
-                "Initialized generation state for request"
-            );
-        }
-
-        let state = self.generation_states.get(&request_id).ok_or_else(|| {
-            WorkerError::partition_processing("Generation state not found for request")
-        })?;
-        let sampling_params = state.sampling_params.clone();
+        let params = activation
+            .metadata
+            .generation_params
+            .clone()
+            .unwrap_or_default();
+        let seed = params.seed.unwrap_or_else(rand::random::<u64>);
+        let sampling_params =
+            SamplingParams::new(params.temperature, params.top_p, params.top_k, seed);
 
         let sample_result = self
             .partition
@@ -266,19 +173,10 @@ impl PipelineStage {
                 )
             })?;
 
-        let state = self.generation_states.get_mut(&request_id).ok_or_else(|| {
-            WorkerError::partition_processing("Generation state not found for request")
-        })?;
-
-        let decision = state.record_token(sample_result.token);
-
-        let is_finished = matches!(decision, GenerationDecision::Finish { .. });
-
         debug!(
             %request_id,
             token = sample_result.token,
-            is_finished,
-            "Multi-stage last stage: sampled token on GPU"
+            "Multi-stage last stage: sampled token, sending to coordinator"
         );
 
         let coord_client = self.coord_client.as_ref().ok_or_else(|| {
@@ -290,15 +188,10 @@ impl PipelineStage {
         coord_client
             .lock()
             .await
-            .send_generation_decision(request_id, decision)
+            .send_token_sampled(request_id, sample_result.token)
             .await?;
 
-        if is_finished {
-            self.generation_states.remove(&request_id);
-            debug!(%request_id, "Cleaned up generation state after completion");
-        }
-
-        debug!(%request_id, "Generation decision sent to coordinator");
+        trace!(%request_id, "Token sent to coordinator");
         Ok(())
     }
 
@@ -318,7 +211,7 @@ impl PipelineStage {
         &mut self,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<(), WorkerError> {
-        info!(
+        debug!(
             layer_range = ?self.assignment.layer_range,
             is_first = self.is_first_stage(),
             is_last = self.is_last_stage(),
@@ -328,7 +221,7 @@ impl PipelineStage {
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
-                    info!("Shutdown signal received, stopping stage");
+                    debug!("Shutdown signal received, stopping stage");
                     break;
                 }
 
@@ -342,8 +235,11 @@ impl PipelineStage {
                             );
 
                             if self.is_multi_stage_last() {
-                                debug!(
+                                trace!(
                                     request_id = %activation.metadata.request_id,
+                                    positions = ?activation.metadata.positions,
+                                    shape = ?activation.shape.dims(),
+                                    is_prefill = activation.metadata.is_prefill,
                                     "Multi-stage last stage: processing and sampling locally"
                                 );
                                 self.process_multi_stage_last(activation).await?;
@@ -353,7 +249,7 @@ impl PipelineStage {
                             }
                         }
                         Err(WorkerError::Transport(rig_core::TransportError::Closed)) => {
-                            info!("Previous peer connection closed, stopping stage");
+                            debug!("Previous peer connection closed, stopping stage");
                             break;
                         }
                         Err(e) => {
@@ -365,7 +261,7 @@ impl PipelineStage {
             }
         }
 
-        info!("Stage processing loop stopped");
+        debug!("Stage processing loop stopped");
         Ok(())
     }
 }

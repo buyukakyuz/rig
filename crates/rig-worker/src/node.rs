@@ -3,10 +3,11 @@ use std::time::{Duration, Instant};
 use rig_core::{
     Activation, ActivationMetadata, Address, Assignment, CoordinatorMessage, DType, InferenceInput,
     InferenceRequest, LoadedPartition, ModelId, ModelInfo, ModelSpec, NodeId, NodeInfo, NodeStatus,
-    Partition, PartitionSpec, RequestId, Runtime, Shape, TensorData, Tokenizer, UsageStats,
+    Partition, PartitionSpec, RequestId, Runtime, SamplingParams, Shape, StopChecker, TensorData,
+    Tokenizer, UsageStats,
 };
 use tokio::sync::broadcast;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::config::WorkerConfig;
 use crate::coordinator_client::{CoordinatorClient, create_heartbeat_client};
@@ -68,7 +69,7 @@ impl<R: Runtime> WorkerNode<R> {
     pub async fn start_peer_listener(&mut self) -> Result<(), WorkerError> {
         let listener = PeerListener::bind(self.config.listen_addr).await?;
         let local_addr = listener.local_addr()?;
-        info!(%local_addr, "Peer listener started");
+        debug!(%local_addr, "Peer listener started");
         self.peer_listener = Some(listener);
         Ok(())
     }
@@ -79,10 +80,10 @@ impl<R: Runtime> WorkerNode<R> {
 
     #[instrument(skip(self), fields(addr = %self.config.coordinator_addr))]
     pub async fn connect_to_coordinator(&mut self) -> Result<(), WorkerError> {
-        info!("Connecting to coordinator");
+        debug!("Connecting to coordinator");
         let client = CoordinatorClient::connect(&self.config.coordinator_addr).await?;
         self.coordinator_client = Some(client);
-        info!("Connected to coordinator");
+        debug!("Connected to coordinator");
         Ok(())
     }
 
@@ -109,11 +110,11 @@ impl<R: Runtime> WorkerNode<R> {
             .as_mut()
             .ok_or(WorkerError::NotRegistered)?;
 
-        info!(%node_id, num_models = models.len(), "Registering with coordinator");
+        debug!(%node_id, num_models = models.len(), "Registering with coordinator");
         let registered_id = client.register_with_models(info, models).await?;
         self.node_id = Some(registered_id);
 
-        info!(%registered_id, "Registration successful");
+        debug!(%registered_id, "Registration successful");
         Ok(registered_id)
     }
 
@@ -133,7 +134,7 @@ impl<R: Runtime> WorkerNode<R> {
             }
         });
 
-        info!(%node_id, interval = ?interval, "Heartbeat task started");
+        debug!(%node_id, interval = ?interval, "Heartbeat task started");
         Ok(())
     }
 
@@ -146,7 +147,7 @@ impl<R: Runtime> WorkerNode<R> {
 
         loop {
             if let Some(assignment) = client.get_assignment().await? {
-                info!(
+                debug!(
                     pipeline_id = %assignment.pipeline_id,
                     stage_id = %assignment.stage_id,
                     layer_range = ?assignment.layer_range,
@@ -172,7 +173,7 @@ impl<R: Runtime> WorkerNode<R> {
         let partition_spec =
             PartitionSpec::new(assignment.layer_range.clone(), rig_core::DType::F16);
 
-        info!(
+        debug!(
             model = %model_spec.model_id,
             path = %model_spec.path.display(),
             "Loading partition"
@@ -183,7 +184,7 @@ impl<R: Runtime> WorkerNode<R> {
             .load_partition(model_spec, &partition_spec)
             .await?;
 
-        info!("Partition loaded successfully");
+        debug!("Partition loaded successfully");
         Ok(loaded)
     }
 
@@ -197,7 +198,7 @@ impl<R: Runtime> WorkerNode<R> {
                 .first_address()
                 .ok_or_else(|| WorkerError::peer_connection("Next peer has no address"))?;
 
-            info!(peer_node_id = %next_addr.node_id, addr = %addr, "Connecting to next stage");
+            debug!(peer_node_id = %next_addr.node_id, addr = %addr, "Connecting to next stage");
             Some(PeerConnection::connect(addr, next_addr.node_id).await?)
         } else {
             None
@@ -209,7 +210,7 @@ impl<R: Runtime> WorkerNode<R> {
                 .as_ref()
                 .ok_or_else(|| WorkerError::peer_connection("Peer listener not started"))?;
 
-            info!(peer_node_id = %prev_addr.node_id, "Waiting for connection from previous stage");
+            debug!(peer_node_id = %prev_addr.node_id, "Waiting for connection from previous stage");
             Some(listener.accept(prev_addr.node_id).await?)
         } else {
             None
@@ -230,9 +231,9 @@ impl<R: Runtime> WorkerNode<R> {
             .as_mut()
             .ok_or(WorkerError::NotRegistered)?;
 
-        info!(pipeline_id = %assignment.pipeline_id, "Reporting ready");
+        debug!(pipeline_id = %assignment.pipeline_id, "Reporting ready");
         client.report_ready(assignment.pipeline_id).await?;
-        info!("Ready status acknowledged");
+        debug!("Ready status acknowledged");
         Ok(())
     }
 
@@ -258,7 +259,7 @@ impl<R: Runtime> WorkerNode<R> {
             .ok_or_else(|| WorkerError::ModelNotFound(model_id.to_string()))?;
 
         let model_spec = self.runtime.discover_model(model_id, model_path)?;
-        info!(
+        debug!(
             num_layers = model_spec.num_layers,
             hidden_dim = model_spec.hidden_dim,
             "Discovered model metadata"
@@ -310,14 +311,14 @@ impl<R: Runtime> WorkerNode<R> {
                 CoordinatorClient::connect_for_node(&coordinator_addr, node_id).await?;
             stage
                 .set_coordinator_client(std::sync::Arc::new(tokio::sync::Mutex::new(coord_client)));
-            info!("Multi-stage last stage coordinator client connected");
+            debug!("Multi-stage last stage coordinator client connected");
         }
 
         self.set_stage(stage);
 
         self.report_ready(&assignment).await?;
 
-        info!("Worker ready, starting inference loop");
+        debug!("Worker ready, starting inference loop");
         let shutdown_rx = self.shutdown_receiver();
 
         if let Some(stage) = self.stage.as_mut() {
@@ -328,7 +329,7 @@ impl<R: Runtime> WorkerNode<R> {
             }
         }
 
-        info!("Shutdown signal received, cleaning up");
+        debug!("Shutdown signal received, cleaning up");
         Ok(())
     }
 
@@ -337,14 +338,14 @@ impl<R: Runtime> WorkerNode<R> {
         assignment: &Assignment,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<(), WorkerError> {
-        info!("Starting first stage polling loop");
+        debug!("Starting first stage polling loop");
 
         let pipeline_id = assignment.pipeline_id;
 
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
-                    info!("Shutdown signal received, stopping first stage");
+                    debug!("Shutdown signal received, stopping first stage");
                     break;
                 }
 
@@ -384,21 +385,58 @@ impl<R: Runtime> WorkerNode<R> {
             return Err(WorkerError::NoAssignment);
         }
 
-        let activation = {
+        let (activation, eos_token) = {
             let stage = self.stage.as_ref().ok_or(WorkerError::NoAssignment)?;
 
             let tokenizer = stage
                 .tokenizer()
                 .ok_or_else(|| WorkerError::config("Model does not support tokenization"))?;
 
-            create_initial_activation(&request, tokenizer)?
+            let activation = create_initial_activation(&request, tokenizer)?;
+            let eos_token = tokenizer.eos_token();
+            (activation, eos_token)
         };
 
         let prompt_tokens = activation.metadata.positions.len();
         let start_time = Instant::now();
 
         let stage = self.stage.as_mut().ok_or(WorkerError::NoAssignment)?;
+
+        if stage.is_first_stage() && stage.is_last_stage() {
+            debug!(%request_id, "Single-stage pipeline: running local generation");
+            return self
+                .run_single_stage_generation(request, activation, prompt_tokens, start_time)
+                .await;
+        }
+
+        {
+            let client = self
+                .coordinator_client
+                .as_mut()
+                .ok_or(WorkerError::NotRegistered)?;
+
+            client
+                .send_generation_started(request_id, eos_token, prompt_tokens)
+                .await?;
+
+            debug!(
+                %request_id,
+                eos_token,
+                prompt_tokens,
+                "Notified coordinator of generation start"
+            );
+        }
+
         let output = stage.forward(activation)?;
+
+        trace!(
+            %request_id,
+            output_shape = ?output.shape.dims(),
+            output_positions = ?output.metadata.positions,
+            is_prefill = output.metadata.is_prefill,
+            "First stage sending activation to next stage"
+        );
+
         stage.send_activation(&output).await?;
 
         self.run_multi_stage_generation_loop(request_id, prompt_tokens, start_time)
@@ -443,7 +481,7 @@ impl<R: Runtime> WorkerNode<R> {
                     token,
                     position,
                 } => {
-                    debug!(%request_id, %token, %position, "Continuing generation");
+                    trace!(%request_id, %token, %position, "Continuing generation (decode step)");
 
                     if let Some(ref mut stream) = decode_stream {
                         if let Ok(Some(new_text)) = stream.step(token) {
@@ -458,6 +496,12 @@ impl<R: Runtime> WorkerNode<R> {
 
                     let stage = self.stage.as_mut().ok_or(WorkerError::NoAssignment)?;
                     let output = stage.forward(activation)?;
+
+                    trace!(
+                        %request_id,
+                        output_shape = ?output.shape.dims(),
+                        "First stage decode: sending activation to next stage"
+                    );
 
                     stage.send_activation(&output).await?;
                 }
@@ -502,6 +546,114 @@ impl<R: Runtime> WorkerNode<R> {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    async fn run_single_stage_generation(
+        &mut self,
+        request: InferenceRequest,
+        initial_activation: Activation,
+        prompt_tokens: usize,
+        start_time: Instant,
+    ) -> Result<(), WorkerError> {
+        let request_id = request.request_id;
+        let params = request.params;
+
+        let mut streaming_client = CoordinatorClient::connect_for_node(
+            &self.config.coordinator_addr,
+            self.node_id.ok_or(WorkerError::NotRegistered)?,
+        )
+        .await?;
+
+        let stage = self.stage.as_mut().ok_or(WorkerError::NoAssignment)?;
+
+        let eos_token = stage
+            .tokenizer()
+            .ok_or_else(|| WorkerError::config("Tokenizer required for generation"))?
+            .eos_token();
+
+        let mut decode_stream = stage
+            .tokenizer()
+            .and_then(|t| t.create_decode_stream(true).ok());
+
+        let seed = params.seed.unwrap_or_else(rand::random::<u64>);
+        let sampling_params =
+            SamplingParams::new(params.temperature, params.top_p, params.top_k, seed);
+        let stop_checker = StopChecker::new(eos_token, params.max_tokens);
+        let mut generated_tokens = Vec::new();
+        #[allow(clippy::cast_possible_truncation)]
+        let time_to_first_token_ms;
+
+        let (partition, _tokenizer) = stage.partition_and_tokenizer();
+        let first_sample = partition
+            .forward_sample(initial_activation, &sampling_params)
+            .map_err(|e| WorkerError::partition_processing(e.to_string()))?
+            .ok_or_else(|| {
+                WorkerError::partition_processing("forward_sample returned None for single-stage")
+            })?;
+
+        let mut current_token = first_sample.token;
+        generated_tokens.push(current_token);
+
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            time_to_first_token_ms = Some(start_time.elapsed().as_millis() as u64);
+        }
+
+        if let Some(ref mut stream) = decode_stream {
+            if let Ok(Some(text)) = stream.step(current_token) {
+                let _ = streaming_client.send_token(request_id, text).await;
+            }
+        }
+
+        loop {
+            let stop_reason = stop_checker.should_stop(&generated_tokens);
+            if stop_reason.is_stopped() {
+                debug!(%request_id, reason = ?stop_reason, "Generation stopped");
+                break;
+            }
+
+            #[allow(clippy::cast_possible_truncation)]
+            let position = (prompt_tokens + generated_tokens.len()) as u32;
+            let decode_activation = create_decode_activation(request_id, current_token, position);
+
+            let (partition, _) = stage.partition_and_tokenizer();
+            let sample = partition
+                .forward_sample(decode_activation, &sampling_params)
+                .map_err(|e| WorkerError::partition_processing(e.to_string()))?
+                .ok_or_else(|| WorkerError::partition_processing("forward_sample returned None"))?;
+
+            current_token = sample.token;
+            generated_tokens.push(current_token);
+
+            if let Some(ref mut stream) = decode_stream {
+                if let Ok(Some(text)) = stream.step(current_token) {
+                    let _ = streaming_client.send_token(request_id, text).await;
+                }
+            }
+        }
+
+        let elapsed = start_time.elapsed();
+        #[allow(clippy::cast_possible_truncation)]
+        let usage = UsageStats {
+            prompt_tokens,
+            completion_tokens: generated_tokens.len(),
+            total_time_ms: elapsed.as_millis() as u64,
+            time_to_first_token_ms: time_to_first_token_ms.unwrap_or(0),
+        };
+
+        streaming_client
+            .send_streaming_complete(request_id, usage)
+            .await?;
+
+        debug!(
+            %request_id,
+            prompt_tokens,
+            completion_tokens = generated_tokens.len(),
+            total_ms = elapsed.as_millis(),
+            "Single-stage generation complete"
+        );
 
         Ok(())
     }
@@ -557,26 +709,36 @@ fn create_initial_activation(
     let tokens: Vec<u32> = match &request.input {
         InferenceInput::Tokens(tokens) => tokens.clone(),
         InferenceInput::Text(text) => {
-            let full_text = if request.params.use_chat_template {
+            let (full_text, used_chat_template) = if request.params.use_chat_template {
                 let mut messages = Vec::new();
                 if let Some(sp) = &request.params.system_prompt {
                     messages.push(rig_core::ChatMessage::system(sp));
                 }
                 messages.push(rig_core::ChatMessage::user(text));
-                tokenizer
+                let rendered = tokenizer
                     .apply_chat_template(&messages, true)
-                    .map_err(|e| WorkerError::config(format!("Chat template failed: {e}")))?
+                    .map_err(|e| WorkerError::config(format!("Chat template failed: {e}")))?;
+                tracing::debug!(
+                    rendered_len = rendered.len(),
+                    rendered_preview = %rendered.chars().take(200).collect::<String>(),
+                    "Chat template applied"
+                );
+                (rendered, true)
             } else {
-                request
+                let text = request
                     .params
                     .system_prompt
                     .as_ref()
-                    .map_or_else(|| text.clone(), |sp| format!("{sp}\n\n{text}"))
+                    .map_or_else(|| text.clone(), |sp| format!("{sp}\n\n{text}"));
+                (text, false)
             };
 
-            tokenizer
-                .encode(&full_text, true)
-                .map_err(|e| WorkerError::config(format!("Tokenization failed: {e}")))?
+            let add_bos = !used_chat_template;
+            let tokens = tokenizer
+                .encode(&full_text, add_bos)
+                .map_err(|e| WorkerError::config(format!("Tokenization failed: {e}")))?;
+            tracing::debug!(num_tokens = tokens.len(), add_bos, "Tokenized input");
+            tokens
         }
     };
 
@@ -614,12 +776,12 @@ fn create_decode_activation(request_id: RequestId, token: u32, position: u32) ->
 fn run_warmup(partition: &dyn Partition) -> Result<(), WorkerError> {
     let is_first_stage = partition.spec().layer_range.start == 0;
     if !is_first_stage {
-        info!("Skipping warm-up for non-first stage partition");
+        debug!("Skipping warm-up for non-first stage partition");
         return Ok(());
     }
 
     let start = Instant::now();
-    info!("Running warm-up pass");
+    debug!("Running warm-up pass");
 
     let warmup_token: u32 = 1;
     let bytes = warmup_token.to_le_bytes().to_vec();
@@ -638,7 +800,7 @@ fn run_warmup(partition: &dyn Partition) -> Result<(), WorkerError> {
     partition.release_request_cache(warmup_request_id);
 
     let elapsed = start.elapsed();
-    info!(elapsed_ms = elapsed.as_millis(), "Warm-up complete");
+    debug!(elapsed_ms = elapsed.as_millis(), "Warm-up complete");
 
     Ok(())
 }

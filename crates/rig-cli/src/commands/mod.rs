@@ -1,15 +1,19 @@
 pub mod benchmark;
+pub mod config;
 pub mod coordinator;
 pub mod demo;
 pub mod generate;
+pub mod inference;
 pub mod pipeline;
 pub mod status;
 pub mod worker;
 
 pub use benchmark::run_benchmark;
+pub use config::run_config;
 pub use coordinator::run_coordinator;
 pub use demo::run_demo;
 pub use generate::run_generate;
+pub use inference::run_inference;
 pub use pipeline::run_pipeline;
 pub use status::run_status;
 pub use worker::run_worker;

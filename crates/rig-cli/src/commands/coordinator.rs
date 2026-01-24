@@ -1,40 +1,49 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 use rig_coordinator::{CoordinatorConfig, CoordinatorServer, HeartbeatMonitor};
+use rig_core::RigConfig;
 use tokio::signal;
 
 #[derive(Debug, Args)]
 pub struct CoordinatorArgs {
     /// Address to listen on.
-    #[arg(
-        short,
-        long,
-        env = "RIG_COORDINATOR_LISTEN_ADDR",
-        default_value = "0.0.0.0:50051"
-    )]
-    pub listen_addr: SocketAddr,
+    #[arg(short, long, env = "RIG_COORDINATOR_LISTEN_ADDR")]
+    pub listen_addr: Option<SocketAddr>,
 
     /// Heartbeat interval in seconds.
-    #[arg(long, env = "RIG_HEARTBEAT_INTERVAL", default_value = "10")]
-    pub heartbeat_interval: u64,
+    #[arg(long, env = "RIG_HEARTBEAT_INTERVAL")]
+    pub heartbeat_interval: Option<u64>,
 
     /// Heartbeat timeout in seconds.
-    #[arg(long, env = "RIG_HEARTBEAT_TIMEOUT", default_value = "30")]
-    pub heartbeat_timeout: u64,
+    #[arg(long, env = "RIG_HEARTBEAT_TIMEOUT")]
+    pub heartbeat_timeout: Option<u64>,
 
     /// Maximum number of nodes.
-    #[arg(long, env = "RIG_MAX_NODES", default_value = "100")]
-    pub max_nodes: usize,
+    #[arg(long, env = "RIG_MAX_NODES")]
+    pub max_nodes: Option<usize>,
 }
 
-pub async fn run_coordinator(args: CoordinatorArgs) -> Result<()> {
-    let listen_addr = args.listen_addr;
-    let heartbeat_interval = Duration::from_secs(args.heartbeat_interval);
-    let heartbeat_timeout = Duration::from_secs(args.heartbeat_timeout);
-    let max_nodes = args.max_nodes;
+pub async fn run_coordinator(args: CoordinatorArgs, config: &RigConfig) -> Result<()> {
+    let listen_addr = match args.listen_addr {
+        Some(addr) => addr,
+        None => config
+            .coordinator
+            .listen_addr
+            .parse()
+            .context("Invalid listen address in config")?,
+    };
+    let heartbeat_interval = Duration::from_secs(
+        args.heartbeat_interval
+            .unwrap_or(config.coordinator.heartbeat_interval_secs),
+    );
+    let heartbeat_timeout = Duration::from_secs(
+        args.heartbeat_timeout
+            .unwrap_or(config.coordinator.heartbeat_timeout_secs),
+    );
+    let max_nodes = args.max_nodes.unwrap_or(config.coordinator.max_nodes);
 
     let config = CoordinatorConfig::default()
         .with_listen_addr(listen_addr)

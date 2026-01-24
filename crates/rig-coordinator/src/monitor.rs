@@ -30,7 +30,7 @@ impl HeartbeatMonitor {
     }
 
     pub async fn run(mut self) {
-        tracing::info!(
+        tracing::debug!(
             timeout_secs = self.timeout.as_secs(),
             check_interval_secs = self.check_interval.as_secs(),
             "Heartbeat monitor started"
@@ -44,7 +44,7 @@ impl HeartbeatMonitor {
                     self.check_heartbeats().await;
                 }
                 _ = self.shutdown_rx.recv() => {
-                    tracing::info!("Heartbeat monitor shutting down");
+                    tracing::debug!("Heartbeat monitor shutting down");
                     break;
                 }
             }

@@ -144,6 +144,17 @@ impl ConnectionHandler {
             WorkerMessage::GetGenerationControl { request_id } => {
                 self.handle_get_generation_control(request_id).await
             }
+            WorkerMessage::GenerationStarted {
+                request_id,
+                eos_token,
+                prompt_tokens,
+            } => {
+                self.handle_generation_started(request_id, eos_token, prompt_tokens)
+                    .await
+            }
+            WorkerMessage::TokenSampled { request_id, token } => {
+                self.handle_token_sampled(request_id, token).await
+            }
         }
     }
 
@@ -226,7 +237,7 @@ impl ConnectionHandler {
     async fn handle_deregister(&mut self) -> Result<CoordinatorMessage, CoordError> {
         if let Some(node_id) = self.node_id.take() {
             self.state.deregister_node(node_id).await;
-            tracing::info!(%node_id, addr = %self.remote_addr, "Node deregistered gracefully");
+            tracing::debug!(%node_id, addr = %self.remote_addr, "Node deregistered gracefully");
         }
 
         Err(CoordError::ReportFailed(
@@ -300,6 +311,78 @@ impl ConnectionHandler {
             }
             None => Ok(CoordinatorMessage::GenerationPending { request_id }),
         }
+    }
+
+    async fn handle_generation_started(
+        &self,
+        request_id: rig_core::RequestId,
+        eos_token: u32,
+        prompt_tokens: usize,
+    ) -> Result<CoordinatorMessage, CoordError> {
+        tracing::debug!(
+            %request_id,
+            eos_token,
+            prompt_tokens,
+            "Generation started by first stage"
+        );
+
+        let params = rig_core::GenerationParams::default();
+        let seed = rand::random::<u64>();
+
+        self.state
+            .start_generation_session(request_id, &params, eos_token, prompt_tokens, seed)
+            .await;
+
+        Ok(CoordinatorMessage::ResultAck)
+    }
+
+    async fn handle_token_sampled(
+        &self,
+        request_id: rig_core::RequestId,
+        token: u32,
+    ) -> Result<CoordinatorMessage, CoordError> {
+        use crate::generation::GenerationStatus;
+
+        tracing::trace!(%request_id, token, "Token sampled by last stage");
+
+        let status = self.state.on_token_sampled(request_id, token).await?;
+
+        match status {
+            GenerationStatus::Continue { token, position } => {
+                self.state
+                    .store_generation_decision(
+                        request_id,
+                        rig_core::GenerationDecision::Continue { token, position },
+                    )
+                    .await;
+            }
+            GenerationStatus::Complete { stop_reason } => {
+                let (generated_tokens, time_to_first_token_ms) =
+                    self.state.get_session_finish_data(request_id).await?;
+
+                tracing::debug!(
+                    %request_id,
+                    num_tokens = generated_tokens.len(),
+                    stop_reason = %stop_reason,
+                    "Generation complete"
+                );
+
+                self.state
+                    .store_generation_decision(
+                        request_id,
+                        rig_core::GenerationDecision::Finish {
+                            generated_tokens,
+                            stop_reason,
+                            time_to_first_token_ms,
+                        },
+                    )
+                    .await;
+
+                self.state.end_generation_session(request_id).await;
+            }
+        }
+
+        Ok(CoordinatorMessage::ResultAck)
     }
 
     async fn handle_token_generated(
@@ -457,7 +540,7 @@ impl ConnectionHandler {
         &self,
         req: rig_core::CliCreatePipelineRequest,
     ) -> Result<CliResponse, CoordError> {
-        tracing::info!(
+        tracing::debug!(
             addr = %self.remote_addr,
             model = %req.config.model_id,
             stages = req.assignments.len(),
@@ -477,14 +560,15 @@ impl ConnectionHandler {
         &self,
         req: rig_core::CliCreatePipelineAutoRequest,
     ) -> Result<CliResponse, CoordError> {
-        use crate::state::CoordinatorState;
+        use rig_core::PartitioningStrategy;
 
         let model_id = rig_core::ModelId::new(&req.model_name, &req.model_version);
 
-        tracing::info!(
+        tracing::debug!(
             addr = %self.remote_addr,
             model = %model_id,
             num_stages = ?req.num_stages,
+            strategy = ?req.strategy,
             "CLI create pipeline auto request"
         );
 
@@ -501,13 +585,16 @@ impl ConnectionHandler {
                 CoordError::InvalidRequest(format!("Model '{model_id}' not found in registry"))
             })?;
 
-        let num_stages = req.num_stages.unwrap_or(nodes_with_model.len());
+        let strategy = req.strategy.clone().unwrap_or_else(|| {
+            let num_stages = req.num_stages.unwrap_or(nodes_with_model.len());
+            PartitioningStrategy::even_split(num_stages)
+        });
 
-        if num_stages == 0 {
-            return Err(CoordError::InvalidRequest(
-                "At least one stage is required".to_string(),
-            ));
-        }
+        let ranges = strategy
+            .compute_ranges(num_layers, nodes_with_model.len())
+            .map_err(|e| CoordError::InvalidRequest(e.to_string()))?;
+
+        let num_stages = ranges.len();
 
         if num_stages > nodes_with_model.len() {
             return Err(CoordError::InvalidRequest(format!(
@@ -517,8 +604,6 @@ impl ConnectionHandler {
                 model_id
             )));
         }
-
-        let ranges = CoordinatorState::partition_layers(num_layers, num_stages);
 
         let assignments: Vec<(rig_core::NodeId, std::ops::Range<usize>)> = nodes_with_model
             .iter()

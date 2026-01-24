@@ -241,6 +241,59 @@ impl CoordinatorClient {
         }
     }
 
+    pub async fn send_generation_started(
+        &mut self,
+        request_id: RequestId,
+        eos_token: u32,
+        prompt_tokens: usize,
+    ) -> Result<(), WorkerError> {
+        if !self.is_registered() {
+            return Err(WorkerError::NotRegistered);
+        }
+
+        self.send(&WorkerMessage::GenerationStarted {
+            request_id,
+            eos_token,
+            prompt_tokens,
+        })
+        .await?;
+
+        let response: CoordinatorMessage = self.recv().await?;
+        match response {
+            CoordinatorMessage::ResultAck => Ok(()),
+            CoordinatorMessage::Error { code, message } => {
+                Err(WorkerError::CoordinatorError { code, message })
+            }
+            _ => Err(WorkerError::UnexpectedResponse(
+                "Expected ResultAck".to_string(),
+            )),
+        }
+    }
+
+    pub async fn send_token_sampled(
+        &mut self,
+        request_id: RequestId,
+        token: u32,
+    ) -> Result<(), WorkerError> {
+        if !self.is_registered() {
+            return Err(WorkerError::NotRegistered);
+        }
+
+        self.send(&WorkerMessage::TokenSampled { request_id, token })
+            .await?;
+
+        let response: CoordinatorMessage = self.recv().await?;
+        match response {
+            CoordinatorMessage::ResultAck => Ok(()),
+            CoordinatorMessage::Error { code, message } => {
+                Err(WorkerError::CoordinatorError { code, message })
+            }
+            _ => Err(WorkerError::UnexpectedResponse(
+                "Expected ResultAck".to_string(),
+            )),
+        }
+    }
+
     pub async fn get_generation_control(
         &mut self,
         request_id: RequestId,

@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::Args;
 use rig_coordinator::{CoordinatorConfig, CoordinatorServer, HeartbeatMonitor};
 use rig_core::types::protocol::CliCreatePipelineAutoRequest;
-use rig_core::{Address, GenerationParams, InferenceInput, ModelId, PipelineId};
+use rig_core::{Address, GenerationParams, InferenceInput, ModelId, PipelineId, RigConfig};
 use rig_worker::{WorkerConfig, WorkerNode};
 use tokio::sync::broadcast;
 
@@ -26,24 +26,24 @@ pub struct DemoArgs {
     pub workers: usize,
 
     /// Device: "cpu", "metal", "cuda", or "auto".
-    #[arg(long, env = "RIG_DEVICE", default_value = "auto")]
-    pub device: String,
+    #[arg(long, env = "RIG_DEVICE")]
+    pub device: Option<String>,
 
     /// System prompt for the chat.
     #[arg(long, default_value = "You are a helpful assistant.")]
     pub system_prompt: String,
 
     /// Maximum tokens to generate per response.
-    #[arg(long, default_value = "1024")]
-    pub max_tokens: usize,
+    #[arg(long)]
+    pub max_tokens: Option<usize>,
 
     /// Temperature for sampling.
-    #[arg(long, default_value = "0.7")]
-    pub temperature: f32,
+    #[arg(long)]
+    pub temperature: Option<f32>,
 
     /// Top-p sampling threshold.
-    #[arg(long, default_value = "0.9")]
-    pub top_p: f32,
+    #[arg(long)]
+    pub top_p: Option<f32>,
 
     /// Random seed for reproducible generation.
     #[arg(long)]
@@ -86,7 +86,12 @@ struct DemoCluster {
 }
 
 impl DemoCluster {
-    async fn start(model_name: &str, model_path: &Path, args: &DemoArgs) -> Result<Self> {
+    async fn start(
+        model_name: &str,
+        model_path: &Path,
+        args: &DemoArgs,
+        config: &RigConfig,
+    ) -> Result<Self> {
         let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
         let coordinator_addr: SocketAddr =
@@ -94,8 +99,12 @@ impl DemoCluster {
 
         let coord_config = CoordinatorConfig::default()
             .with_listen_addr(coordinator_addr)
-            .with_heartbeat_interval(Duration::from_secs(10))
-            .with_heartbeat_timeout(Duration::from_secs(30));
+            .with_heartbeat_interval(Duration::from_secs(
+                config.coordinator.heartbeat_interval_secs,
+            ))
+            .with_heartbeat_timeout(Duration::from_secs(
+                config.coordinator.heartbeat_timeout_secs,
+            ));
 
         let mut coordinator = CoordinatorServer::new(coord_config.clone());
         let coord_state = coordinator.state();
@@ -130,6 +139,8 @@ impl DemoCluster {
         let mut model_paths = HashMap::new();
         model_paths.insert(model_id.clone(), model_path.to_path_buf());
 
+        let device = args.device.as_deref().unwrap_or(&config.runtime.device);
+
         for i in 0..args.workers {
             #[allow(clippy::cast_possible_truncation)]
             let worker_port = args.worker_base_port + i as u16;
@@ -138,10 +149,10 @@ impl DemoCluster {
             let worker_config = WorkerConfig::default()
                 .with_coordinator_addr(Address::tcp(coordinator_addr))
                 .with_listen_addr(worker_addr)
-                .with_heartbeat_interval(Duration::from_secs(10))
+                .with_heartbeat_interval(Duration::from_secs(config.worker.heartbeat_interval_secs))
                 .with_model_paths(model_paths.clone());
 
-            let runtime = crate::runtime::create_runtime(&args.device)?;
+            let runtime = crate::runtime::create_runtime(device)?;
 
             let mut worker = WorkerNode::new(worker_config, runtime);
             let worker_shutdown_rx = shutdown_tx.subscribe();
@@ -350,19 +361,24 @@ async fn run_interactive_chat(
     Ok(())
 }
 
-pub async fn run_demo(args: DemoArgs) -> Result<()> {
+pub async fn run_demo(args: DemoArgs, config: &RigConfig) -> Result<()> {
     let model_name = get_model_name(&args.model)?;
+
+    let device = args.device.as_deref().unwrap_or(&config.runtime.device);
+    let max_tokens = args.max_tokens.unwrap_or(config.generation.max_tokens);
+    let temperature = args.temperature.unwrap_or(config.generation.temperature);
+    let top_p = args.top_p.unwrap_or(config.generation.top_p);
 
     println!();
     println!("Starting Rig Demo");
     println!("=================");
     println!("Model: {} ({})", model_name, args.model.display());
     println!("Workers: {}", args.workers);
-    println!("Device: {}", args.device);
+    println!("Device: {device}");
     println!();
 
     println!("Starting coordinator and workers...");
-    let mut cluster = DemoCluster::start(&model_name, &args.model, &args).await?;
+    let mut cluster = DemoCluster::start(&model_name, &args.model, &args, config).await?;
 
     print!("Creating pipeline... ");
     io::stdout().flush()?;
@@ -390,9 +406,9 @@ pub async fn run_demo(args: DemoArgs) -> Result<()> {
     } else {
         let gen_config = GenerationConfig {
             system_prompt: args.system_prompt.clone(),
-            max_tokens: args.max_tokens,
-            temperature: args.temperature,
-            top_p: args.top_p,
+            max_tokens,
+            temperature,
+            top_p,
             seed: args.seed,
         };
         tokio::select! {

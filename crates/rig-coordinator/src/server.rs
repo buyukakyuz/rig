@@ -71,7 +71,7 @@ impl CoordinatorServer {
             CoordError::CoordinatorUnreachable(format!("Failed to get local address: {e}"))
         })?;
         self.listen_addr = Some(local_addr);
-        tracing::info!(addr = %local_addr, "Coordinator listening");
+        tracing::debug!(addr = %local_addr, "Coordinator listening");
 
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
@@ -100,7 +100,7 @@ impl CoordinatorServer {
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    tracing::info!("Shutdown signal received, stopping server");
+                    tracing::debug!("Shutdown signal received, stopping server");
                     break;
                 }
             }

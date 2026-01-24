@@ -61,12 +61,32 @@ impl ModelSpec {
 pub struct PartitionSpec {
     pub layer_range: Range<usize>,
     pub dtype: DType,
+
+    #[serde(default)]
+    pub max_context_length: Option<usize>,
 }
 
 impl PartitionSpec {
     #[must_use]
     pub const fn new(layer_range: Range<usize>, dtype: DType) -> Self {
-        Self { layer_range, dtype }
+        Self {
+            layer_range,
+            dtype,
+            max_context_length: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_context_length(
+        layer_range: Range<usize>,
+        dtype: DType,
+        max_context_length: usize,
+    ) -> Self {
+        Self {
+            layer_range,
+            dtype,
+            max_context_length: Some(max_context_length),
+        }
     }
 
     #[must_use]

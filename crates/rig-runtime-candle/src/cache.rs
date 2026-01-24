@@ -1,6 +1,33 @@
+use std::f32::consts::PI;
+
 use candle_core::{DType, Device, Result, Tensor};
 
 use crate::config::TransformerConfig;
+
+#[derive(Debug, Clone, Default)]
+pub struct Llama3RopeConfig {
+    pub factor: f32,
+    pub low_freq_factor: f32,
+    pub high_freq_factor: f32,
+    pub original_max_position_embeddings: usize,
+}
+
+impl Llama3RopeConfig {
+    #[must_use]
+    pub fn new(
+        factor: f32,
+        low_freq_factor: f32,
+        high_freq_factor: f32,
+        original_max_position_embeddings: usize,
+    ) -> Self {
+        Self {
+            factor,
+            low_freq_factor,
+            high_freq_factor,
+            original_max_position_embeddings,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RopeCache {
@@ -24,10 +51,55 @@ impl RopeCache {
         dtype: DType,
         device: &Device,
     ) -> Result<Self> {
-        let inv_freq: Vec<f32> = (0..head_dim)
+        Self::with_scaling(head_dim, max_seq_len, theta, None, dtype, device)
+    }
+
+    pub fn with_scaling(
+        head_dim: usize,
+        max_seq_len: usize,
+        theta: f64,
+        rope_scaling: Option<&Llama3RopeConfig>,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
+        let base_inv_freq: Vec<f32> = (0..head_dim)
             .step_by(2)
             .map(|i| 1.0 / theta.powf(i as f64 / head_dim as f64) as f32)
             .collect();
+
+        let inv_freq: Vec<f32> = match rope_scaling {
+            Some(scaling) => {
+                let low_freq_wavelen =
+                    scaling.original_max_position_embeddings as f32 / scaling.low_freq_factor;
+                let high_freq_wavelen =
+                    scaling.original_max_position_embeddings as f32 / scaling.high_freq_factor;
+
+                tracing::debug!(
+                    low_freq_wavelen,
+                    high_freq_wavelen,
+                    "RoPE scaling wavelength thresholds"
+                );
+
+                base_inv_freq
+                    .into_iter()
+                    .map(|freq| {
+                        let wavelen = 2.0 * PI / freq;
+                        if wavelen < high_freq_wavelen {
+                            freq
+                        } else if wavelen > low_freq_wavelen {
+                            freq / scaling.factor
+                        } else {
+                            let smooth = (scaling.original_max_position_embeddings as f32
+                                / wavelen
+                                - scaling.low_freq_factor)
+                                / (scaling.high_freq_factor - scaling.low_freq_factor);
+                            (1.0 - smooth) * freq / scaling.factor + smooth * freq
+                        }
+                    })
+                    .collect()
+            }
+            None => base_inv_freq,
+        };
 
         let inv_freq = Tensor::new(inv_freq, device)?;
 
@@ -301,5 +373,24 @@ mod tests {
         assert!(cache.is_empty());
         assert_eq!(cache.seq_len(), 0);
         assert!(cache.is_initialized());
+    }
+
+    #[test]
+    fn test_rope_cache_with_llama3_scaling() {
+        let device = Device::Cpu;
+
+        let scaling = Llama3RopeConfig::new(8.0, 1.0, 4.0, 8192);
+
+        let cache =
+            RopeCache::with_scaling(128, 4096, 500_000.0, Some(&scaling), DType::F32, &device)
+                .unwrap_or_else(|e| panic!("Failed to create scaled cache: {e}"));
+
+        assert_eq!(cache.cos.dims(), &[4096, 64]);
+        assert_eq!(cache.sin.dims(), &[4096, 64]);
+
+        let unscaled = RopeCache::with_params(128, 4096, 500_000.0, DType::F32, &device)
+            .unwrap_or_else(|e| panic!("Failed to create unscaled cache: {e}"));
+
+        assert_eq!(unscaled.cos.dims(), cache.cos.dims());
     }
 }

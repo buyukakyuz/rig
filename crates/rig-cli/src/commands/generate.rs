@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use rig_core::{GenerationParams, InferenceInput, PipelineId};
+use rig_core::{GenerationParams, InferenceInput, PipelineId, RigConfig};
 
 use crate::client::CliClient;
 use crate::output::{GenerateContent, GenerateOutput};
@@ -32,24 +32,24 @@ pub struct GenerateArgs {
     pub tokens: Option<String>,
 
     /// Coordinator address.
-    #[arg(long, env = "RIG_COORDINATOR_ADDR", default_value = "127.0.0.1:50051")]
-    pub coordinator: String,
+    #[arg(long, env = "RIG_COORDINATOR_ADDR")]
+    pub coordinator: Option<String>,
 
     /// Maximum tokens to generate.
-    #[arg(long, default_value = "256")]
-    pub max_tokens: usize,
+    #[arg(long)]
+    pub max_tokens: Option<usize>,
 
     /// Sampling temperature.
-    #[arg(long, default_value = "0.7")]
-    pub temperature: f32,
+    #[arg(long)]
+    pub temperature: Option<f32>,
 
     /// Top-p sampling.
-    #[arg(long, default_value = "0.9")]
-    pub top_p: f32,
+    #[arg(long)]
+    pub top_p: Option<f32>,
 
     /// Top-k sampling.
-    #[arg(long, default_value = "40")]
-    pub top_k: usize,
+    #[arg(long)]
+    pub top_k: Option<usize>,
 
     /// Stop sequences (comma-separated).
     #[arg(long)]
@@ -69,8 +69,8 @@ pub struct GenerateArgs {
     pub seed: Option<u64>,
 
     /// Request timeout in seconds.
-    #[arg(long, default_value = "60")]
-    pub timeout: u64,
+    #[arg(long)]
+    pub timeout: Option<u64>,
 
     /// Output format.
     #[arg(short, long, value_enum, default_value = "text")]
@@ -92,12 +92,17 @@ fn parse_input(args: &GenerateArgs) -> Result<InferenceInput> {
     }
 }
 
-fn build_generation_params(args: &GenerateArgs) -> GenerationParams {
+fn build_generation_params(args: &GenerateArgs, config: &RigConfig) -> GenerationParams {
+    let max_tokens = args.max_tokens.unwrap_or(config.generation.max_tokens);
+    let temperature = args.temperature.unwrap_or(config.generation.temperature);
+    let top_p = args.top_p.unwrap_or(config.generation.top_p);
+    let top_k = args.top_k.unwrap_or(config.generation.top_k);
+
     let mut params = GenerationParams::new()
-        .with_max_tokens(args.max_tokens)
-        .with_temperature(args.temperature)
-        .with_top_p(args.top_p)
-        .with_top_k(args.top_k);
+        .with_max_tokens(max_tokens)
+        .with_temperature(temperature)
+        .with_top_p(top_p)
+        .with_top_k(top_k);
 
     if let Some(stop) = &args.stop {
         for seq in stop.split(',') {
@@ -120,9 +125,12 @@ fn build_generation_params(args: &GenerateArgs) -> GenerationParams {
     params
 }
 
-pub async fn run_generate(args: GenerateArgs) -> Result<()> {
-    let coordinator_addr: SocketAddr = args
+pub async fn run_generate(args: GenerateArgs, config: &RigConfig) -> Result<()> {
+    let coordinator_str = args
         .coordinator
+        .as_deref()
+        .unwrap_or(&config.worker.coordinator_addr);
+    let coordinator_addr: SocketAddr = coordinator_str
         .parse()
         .context("Invalid coordinator address")?;
 
@@ -131,9 +139,11 @@ pub async fn run_generate(args: GenerateArgs) -> Result<()> {
         .parse()
         .context("Invalid pipeline ID (expected UUID)")?;
 
+    let timeout_secs = args.timeout.unwrap_or(config.generation.timeout_secs);
+
     let input = parse_input(&args)?;
-    let params = build_generation_params(&args);
-    let timeout_ms = args.timeout * 1000;
+    let params = build_generation_params(&args, config);
+    let timeout_ms = timeout_secs * 1000;
 
     tracing::debug!(
         coordinator = %coordinator_addr,

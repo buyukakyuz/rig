@@ -5,8 +5,6 @@
     clippy::cast_possible_truncation
 )]
 
-use std::path::PathBuf;
-
 use candle_core::{DType, Device};
 #[cfg(feature = "metal")]
 use rig_core::Partition;
@@ -14,7 +12,9 @@ use rig_core::Runtime;
 use rig_core::types::PartitionSpec;
 #[cfg(feature = "metal")]
 use rig_core::types::{Activation, ActivationMetadata, RequestId, Shape, TensorData};
+use rig_runtime_candle::GgufPartition;
 use rig_runtime_candle::{CandlePartition, CandleRuntime, TransformerConfig};
+use std::path::PathBuf;
 
 fn model_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -78,13 +78,11 @@ fn test_load_first_partition() {
 
     let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
 
-    let partition = CandlePartition::load(model_path(), &spec, 22, &device)
+    let partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
         .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
 
     assert!(partition.has_embeddings());
     assert!(!partition.has_lm_head());
-    assert_eq!(partition.config().num_hidden_layers, 22);
-    assert_eq!(partition.config().hidden_size, 2048);
 }
 
 #[test]
@@ -97,7 +95,7 @@ fn test_load_middle_partition() {
     let device = Device::Cpu;
 
     let spec = PartitionSpec::new(10..14, rig_core::DType::F32);
-    let partition = CandlePartition::load(model_path(), &spec, 22, &device)
+    let partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
         .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
 
     assert!(!partition.has_embeddings());
@@ -114,7 +112,7 @@ fn test_load_last_partition() {
     let device = Device::Cpu;
 
     let spec = PartitionSpec::new(18..22, rig_core::DType::F32);
-    let partition = CandlePartition::load(model_path(), &spec, 22, &device)
+    let partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
         .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
 
     assert!(!partition.has_embeddings());
@@ -131,7 +129,7 @@ fn test_load_single_partition_full_model() {
     let device = Device::Cpu;
 
     let spec = PartitionSpec::new(0..22, rig_core::DType::F32);
-    let partition = CandlePartition::load(model_path(), &spec, 22, &device)
+    let partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
         .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
 
     assert!(partition.has_embeddings());
@@ -149,7 +147,7 @@ fn test_first_partition_embedding() {
 
     let spec = PartitionSpec::new(0..2, rig_core::DType::F32);
 
-    let partition = CandlePartition::load(model_path(), &spec, 22, &device)
+    let partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
         .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
 
     let tokens = candle_core::Tensor::new(&[[1u32, 2, 3, 4]], &device)
@@ -204,7 +202,7 @@ fn test_forward_with_token_ids() {
     let device = Device::new_metal(0).expect("Metal device required for SDPA");
 
     let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
-    let partition = CandlePartition::load(model_path(), &spec, 22, &device)
+    let partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
         .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
@@ -242,7 +240,7 @@ fn test_forward_decode_single_token() {
     let device = Device::new_metal(0).expect("Metal device required for SDPA");
 
     let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
-    let partition = CandlePartition::load(model_path(), &spec, 22, &device)
+    let partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
         .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
 
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
@@ -274,4 +272,235 @@ fn test_forward_decode_single_token() {
         .unwrap_or_else(|e| panic!("Failed to forward decode: {e}"));
 
     assert_eq!(output.shape.dims(), &[1, 1, 2048]);
+}
+
+fn gguf_model_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("should have parent")
+        .parent()
+        .expect("should have grandparent")
+        .join("models/tiny-llama-q4")
+}
+
+fn gguf_model_exists() -> bool {
+    let path = gguf_model_path();
+    if !path.exists() {
+        return false;
+    }
+    std::fs::read_dir(&path)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|e| e.path().extension().is_some_and(|ext| ext == "gguf"))
+        })
+        .unwrap_or(false)
+}
+
+#[test]
+fn test_load_gguf_first_partition() {
+    if !gguf_model_exists() {
+        eprintln!(
+            "Skipping test: GGUF model not found at {:?}",
+            gguf_model_path()
+        );
+        return;
+    }
+
+    let device = Device::Cpu;
+
+    let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
+
+    let partition = GgufPartition::load_gguf(&gguf_model_path(), &spec, &device)
+        .unwrap_or_else(|e| panic!("Failed to load GGUF partition: {e}"));
+
+    assert!(partition.has_embeddings());
+    assert!(!partition.has_lm_head());
+}
+
+#[test]
+fn test_load_gguf_last_partition() {
+    if !gguf_model_exists() {
+        eprintln!(
+            "Skipping test: GGUF model not found at {:?}",
+            gguf_model_path()
+        );
+        return;
+    }
+
+    let device = Device::Cpu;
+
+    let spec = PartitionSpec::new(18..22, rig_core::DType::F32);
+
+    let partition = GgufPartition::load_gguf(&gguf_model_path(), &spec, &device)
+        .unwrap_or_else(|e| panic!("Failed to load GGUF partition: {e}"));
+
+    assert!(!partition.has_embeddings());
+    assert!(partition.has_lm_head());
+}
+
+#[test]
+fn test_load_gguf_full_model() {
+    if !gguf_model_exists() {
+        eprintln!(
+            "Skipping test: GGUF model not found at {:?}",
+            gguf_model_path()
+        );
+        return;
+    }
+
+    let device = Device::Cpu;
+
+    let spec = PartitionSpec::new(0..22, rig_core::DType::F32);
+
+    let partition = GgufPartition::load_gguf(&gguf_model_path(), &spec, &device)
+        .unwrap_or_else(|e| panic!("Failed to load GGUF partition: {e}"));
+
+    assert!(partition.has_embeddings());
+    assert!(partition.has_lm_head());
+}
+
+#[test]
+#[cfg(feature = "metal")]
+fn test_gguf_forward() {
+    if !gguf_model_exists() {
+        eprintln!(
+            "Skipping test: GGUF model not found at {:?}",
+            gguf_model_path()
+        );
+        return;
+    }
+
+    let device = Device::new_metal(0).expect("Metal device required for quantized ops");
+
+    let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
+    let partition = GgufPartition::load_gguf(&gguf_model_path(), &spec, &device)
+        .unwrap_or_else(|e| panic!("Failed to load GGUF partition: {e}"));
+
+    let tokens: Vec<u32> = vec![1, 2, 3, 4];
+    let mut bytes = Vec::with_capacity(tokens.len() * 4);
+    for token in &tokens {
+        bytes.extend_from_slice(&token.to_le_bytes());
+    }
+
+    let shape = Shape::new(vec![1, tokens.len(), 1]);
+    let data = TensorData::cpu(bytes, rig_core::DType::I8);
+    let metadata = ActivationMetadata::new(
+        RequestId::new(),
+        0,
+        (0..tokens.len() as u32).collect(),
+        true,
+    );
+    let activation = Activation::new(data, shape, metadata);
+
+    let output = partition
+        .forward(activation)
+        .unwrap_or_else(|e| panic!("Failed to forward: {e}"));
+
+    assert_eq!(output.shape.dims(), &[1, 4, 2048]);
+    assert_eq!(output.dtype(), rig_core::DType::F32);
+}
+
+#[test]
+fn test_load_missing_model_errors() {
+    let device = Device::Cpu;
+    let spec = PartitionSpec::new(0..4, rig_core::DType::F32);
+
+    let result = CandlePartition::load_safetensor(
+        &PathBuf::from("/nonexistent/model/path"),
+        &spec,
+        22,
+        &device,
+    );
+    assert!(
+        result.is_err(),
+        "Loading non-existent safetensor model should error"
+    );
+
+    let result =
+        GgufPartition::load_gguf(&PathBuf::from("/nonexistent/model/path"), &spec, &device);
+    assert!(
+        result.is_err(),
+        "Loading non-existent GGUF model should error"
+    );
+}
+
+#[test]
+fn test_load_invalid_layer_range_errors() {
+    if !model_exists() {
+        eprintln!("Skipping test: model not found at {:?}", model_path());
+        return;
+    }
+
+    let device = Device::Cpu;
+
+    let spec = PartitionSpec::new(20..25, rig_core::DType::F32);
+    let result = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device);
+
+    if let Err(e) = &result {
+        assert!(
+            e.to_string().contains("weight")
+                || e.to_string().contains("not found")
+                || e.to_string().contains("layer"),
+            "Error should be about missing weights: {e}"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "metal")]
+fn test_forward_sample_on_non_final_partition_returns_none() {
+    if !model_exists() {
+        eprintln!("Skipping test: model not found at {:?}", model_path());
+        return;
+    }
+
+    use rig_core::types::SamplingParams;
+
+    let device = Device::new_metal(0).expect("Metal device required for SDPA");
+
+    let spec = PartitionSpec::new(4..8, rig_core::DType::F32);
+    let mut partition = CandlePartition::load_safetensor(&model_path(), &spec, 22, &device)
+        .unwrap_or_else(|e| panic!("Failed to load partition: {e}"));
+
+    assert!(
+        !partition.has_lm_head(),
+        "Middle partition should not have lm_head"
+    );
+
+    let tokens: Vec<u32> = vec![1, 2, 3, 4];
+    let mut bytes = Vec::with_capacity(tokens.len() * 4);
+    for token in &tokens {
+        bytes.extend_from_slice(&token.to_le_bytes());
+    }
+
+    let hidden_size = 2048;
+    let hidden_data: Vec<f32> = vec![0.0; tokens.len() * hidden_size];
+    let bytes: Vec<u8> = hidden_data.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+    let shape = Shape::new(vec![1, tokens.len(), hidden_size]);
+    let data = TensorData::cpu(bytes, rig_core::DType::F32);
+    let metadata = ActivationMetadata::new(
+        RequestId::new(),
+        0,
+        (0..tokens.len() as u32).collect(),
+        true,
+    );
+    let activation = Activation::new(data, shape, metadata);
+
+    let sampling = SamplingParams {
+        temperature: 0.8,
+        top_k: 50,
+        top_p: 0.9,
+        seed: 42,
+    };
+
+    let result = partition
+        .forward_sample(activation, &sampling)
+        .unwrap_or_else(|e| panic!("forward_sample should not error: {e}"));
+
+    assert!(
+        result.is_none(),
+        "forward_sample on middle partition should return None"
+    );
 }

@@ -1,6 +1,12 @@
+pub mod config;
 pub mod error;
 pub mod traits;
 pub mod types;
+
+pub use config::{
+    CoordinatorConfigFile, GenerationConfigFile, LoggingConfigFile, RigConfig, RuntimeConfigFile,
+    TransportConfigFile, WorkerConfigFile,
+};
 
 pub use error::{
     CacheError, ClusterError, CodecError, ConfigError, CoordError, CoordinationError,
@@ -21,9 +27,9 @@ pub use types::{
     GenerationDecision, GenerationParams, HeartbeatRequest, Identity, InferenceInput,
     InferenceOutput, InferenceRequest, InferenceResult, JoinResult, LoadedPartition, MemoryUsage,
     ModelId, ModelInfo, ModelSpec, Neighbors, NodeCapabilities, NodeId, NodeInfo, NodeMetrics,
-    NodeStatus, NodeStatusInfo, PartitionSpec, PeerAddress, PipelineConfig, PipelineId,
-    PipelineInfoResponse, Priority, RegisterRequest, RegisterResponse, RequestContext, RequestId,
-    RuntimeCapabilities, RuntimeId, RuntimeType, SampleResult, SamplingParams, Shape, StageId,
-    StageInfoResponse, StopChecker, StopReason, StopReasonProto, TenantId, TensorData, UsageStats,
-    WorkResult, WorkerMessage,
+    NodeStatus, NodeStatusInfo, PartitionSpec, PartitioningError, PartitioningStrategy,
+    PeerAddress, PipelineConfig, PipelineId, PipelineInfoResponse, Priority, RegisterRequest,
+    RegisterResponse, RequestContext, RequestId, RuntimeCapabilities, RuntimeId, RuntimeType,
+    SampleResult, SamplingParams, Shape, StageId, StageInfoResponse, StopChecker, StopReason,
+    StopReasonProto, TenantId, TensorData, UsageStats, WorkResult, WorkerMessage,
 };

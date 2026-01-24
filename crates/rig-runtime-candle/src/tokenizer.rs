@@ -41,6 +41,7 @@ pub struct CandleTokenizer {
     tokenizer: HfTokenizer,
     chat_template: Option<String>,
     eos_token_str: String,
+    bos_token_str: String,
     add_bos_token: bool,
     bos_token_id: u32,
     eos_token_id: u32,
@@ -51,6 +52,7 @@ impl CandleTokenizer {
         tokenizer: HfTokenizer,
         chat_template: Option<String>,
         eos_token_str: String,
+        bos_token_str: Option<String>,
         add_bos_token: bool,
         bos_token_id: u32,
         eos_token_id: u32,
@@ -59,6 +61,7 @@ impl CandleTokenizer {
             tokenizer,
             chat_template,
             eos_token_str,
+            bos_token_str: bos_token_str.unwrap_or_default(),
             add_bos_token,
             bos_token_id,
             eos_token_id,
@@ -72,17 +75,13 @@ impl rig_core::Tokenizer for CandleTokenizer {
         text: &str,
         add_bos: bool,
     ) -> std::result::Result<Vec<u32>, rig_core::TokenizerError> {
+        let add_special_tokens = add_bos && self.add_bos_token;
         let encoding = self
             .tokenizer
-            .encode(text, true)
+            .encode(text, add_special_tokens)
             .map_err(|e| rig_core::TokenizerError::EncodeFailed(e.to_string()))?;
 
-        let mut ids: Vec<u32> = encoding.get_ids().to_vec();
-
-        if add_bos && self.add_bos_token {
-            ids.insert(0, self.bos_token_id);
-        }
-        Ok(ids)
+        Ok(encoding.get_ids().to_vec())
     }
 
     fn decode(&self, tokens: &[u32]) -> std::result::Result<String, rig_core::TokenizerError> {
@@ -136,6 +135,7 @@ impl rig_core::Tokenizer for CandleTokenizer {
         let ctx = minijinja::context! {
             messages => messages_value,
             eos_token => self.eos_token_str.as_str(),
+            bos_token => self.bos_token_str.as_str(),
             add_generation_prompt => add_generation_prompt,
         };
 
@@ -153,19 +153,16 @@ impl rig_core::Tokenizer for CandleTokenizer {
         texts: &[&str],
         add_bos: bool,
     ) -> std::result::Result<Vec<Vec<u32>>, rig_core::TokenizerError> {
+        let add_special_tokens = add_bos && self.add_bos_token;
         let encodings = self
             .tokenizer
-            .encode_batch(texts.to_vec(), true)
+            .encode_batch(texts.to_vec(), add_special_tokens)
             .map_err(|e| rig_core::TokenizerError::EncodeFailed(e.to_string()))?;
 
-        let mut results = Vec::with_capacity(encodings.len());
-        for encoding in encodings {
-            let mut ids: Vec<u32> = encoding.get_ids().to_vec();
-            if add_bos && self.add_bos_token {
-                ids.insert(0, self.bos_token_id);
-            }
-            results.push(ids);
-        }
+        let results = encodings
+            .into_iter()
+            .map(|encoding| encoding.get_ids().to_vec())
+            .collect();
         Ok(results)
     }
 

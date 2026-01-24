@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::id::{ModelId, NodeId, PipelineId, RequestId};
 use crate::types::node::{ModelInfo, NodeInfo, NodeStatus};
+use crate::types::partitioning::PartitioningStrategy;
 use crate::types::pipeline::{Assignment, PipelineConfig};
 use crate::types::request::{GenerationParams, InferenceInput, InferenceRequest, UsageStats};
 use crate::types::tensor::DType;
@@ -64,6 +65,15 @@ pub enum WorkerMessage {
     },
     GetGenerationControl {
         request_id: RequestId,
+    },
+    GenerationStarted {
+        request_id: RequestId,
+        eos_token: u32,
+        prompt_tokens: usize,
+    },
+    TokenSampled {
+        request_id: RequestId,
+        token: u32,
     },
 }
 
@@ -323,6 +333,8 @@ pub struct CliCreatePipelineAutoRequest {
     pub dtype: DType,
     pub num_stages: Option<usize>,
     pub pipeline_id: Option<PipelineId>,
+    #[serde(default)]
+    pub strategy: Option<PartitioningStrategy>,
 }
 
 fn default_model_version() -> String {
@@ -338,6 +350,7 @@ impl CliCreatePipelineAutoRequest {
             dtype: DType::F16,
             num_stages: None,
             pipeline_id: None,
+            strategy: None,
         }
     }
 
@@ -362,6 +375,12 @@ impl CliCreatePipelineAutoRequest {
     #[must_use]
     pub const fn with_pipeline_id(mut self, pipeline_id: PipelineId) -> Self {
         self.pipeline_id = Some(pipeline_id);
+        self
+    }
+
+    #[must_use]
+    pub fn with_strategy(mut self, strategy: PartitioningStrategy) -> Self {
+        self.strategy = Some(strategy);
         self
     }
 }

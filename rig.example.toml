@@ -1,0 +1,92 @@
+# Rig Configuration File
+
+[coordinator]
+# Address for the coordinator server to listen on
+listen_addr = "0.0.0.0:50051"
+
+# How often workers send heartbeats (seconds)
+heartbeat_interval_secs = 10
+
+# How long before a worker is considered dead (seconds)
+# Must be greater than heartbeat_interval_secs
+heartbeat_timeout_secs = 30
+
+# How often to check for dead workers (seconds)
+heartbeat_check_interval_secs = 5
+
+# Maximum number of worker nodes in the cluster
+max_nodes = 100
+
+# Idle timeout for inactive connections (milliseconds)
+idle_timeout_ms = 60000
+
+[worker]
+# Coordinator address to connect to
+# Env: RIG_COORDINATOR_ADDR or RIG_WORKER_COORDINATOR_ADDR
+coordinator_addr = "127.0.0.1:50051"
+
+# Address for peer connections (0 = random port)
+# Env: RIG_WORKER_LISTEN_ADDR
+listen_addr = "0.0.0.0:0"
+
+# How often to send heartbeats to coordinator (seconds)
+# Env: RIG_HEARTBEAT_INTERVAL or RIG_WORKER_HEARTBEAT_INTERVAL
+heartbeat_interval_secs = 10
+
+# Run warmup inference on startup to prime caches
+enable_warmup = true
+
+[transport]
+# Maximum message size in bytes (default: 64MB)
+max_message_size = 67108864
+
+# Connection timeout (milliseconds)
+connect_timeout_ms = 10000
+
+# Read timeout (milliseconds)
+read_timeout_ms = 30000
+
+# Write timeout (milliseconds)
+write_timeout_ms = 30000
+
+# Enable TCP_NODELAY for lower latency
+nodelay = true
+
+[runtime]
+# Compute device: "auto", "cpu", "metal", "cuda"
+# Env: RIG_DEVICE
+device = "auto"
+
+# Default data type: "f16", "bf16", "f32"
+# Env: RIG_DTYPE
+default_dtype = "f16"
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+# Env: RIG_LOG
+level = "info"
+
+# Log format: "pretty", "json", "compact"
+# Env: RIG_LOG_FORMAT
+format = "pretty"
+
+[generation]
+# Default maximum tokens to generate
+# Env: RIG_GENERATION_MAX_TOKENS
+max_tokens = 256
+
+# Sampling temperature (0.0 - 2.0)
+# Env: RIG_GENERATION_TEMPERATURE
+temperature = 0.7
+
+# Top-p (nucleus) sampling threshold (0.0 - 1.0)
+# Env: RIG_GENERATION_TOP_P
+top_p = 0.9
+
+# Top-k sampling limit
+# Env: RIG_GENERATION_TOP_K
+top_k = 40
+
+# Request timeout (seconds)
+# Env: RIG_GENERATION_TIMEOUT
+timeout_secs = 60

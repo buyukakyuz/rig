@@ -3,14 +3,15 @@ use std::ops::Range;
 use std::time::Instant;
 
 use rig_core::{
-    Address, Assignment, CoordError, GenerationDecision, InferenceRequest, ModelId, ModelInfo,
-    Neighbors, NodeId, NodeInfo, NodeStatus, PeerAddress, PipelineConfig, PipelineId, RequestId,
-    StageId, UsageStats,
+    Address, Assignment, CoordError, GenerationDecision, GenerationParams, InferenceRequest,
+    ModelId, ModelInfo, Neighbors, NodeId, NodeInfo, NodeStatus, PeerAddress, PipelineConfig,
+    PipelineId, RequestId, StageId, UsageStats,
 };
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::warn;
 
 use crate::config::CoordinatorConfig;
+use crate::generation::{GenerationSession, GenerationStatus};
 
 #[derive(Debug)]
 pub struct NodeRecord {
@@ -78,6 +79,7 @@ pub struct CoordinatorState {
     model_registry: RwLock<HashMap<ModelId, (usize, usize)>>,
     generation_decisions: RwLock<HashMap<RequestId, GenerationDecision>>,
     active_multi_stage_requests: RwLock<HashSet<RequestId>>,
+    generation_sessions: RwLock<HashMap<RequestId, GenerationSession>>,
 }
 
 impl std::fmt::Debug for CoordinatorState {
@@ -92,6 +94,7 @@ impl std::fmt::Debug for CoordinatorState {
             .field("model_registry", &"...")
             .field("generation_decisions", &"...")
             .field("active_multi_stage_requests", &"...")
+            .field("generation_sessions", &"...")
             .finish()
     }
 }
@@ -109,6 +112,7 @@ impl CoordinatorState {
             model_registry: RwLock::new(HashMap::new()),
             generation_decisions: RwLock::new(HashMap::new()),
             active_multi_stage_requests: RwLock::new(HashSet::new()),
+            generation_sessions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -140,7 +144,7 @@ impl CoordinatorState {
                     }
                 } else {
                     registry.insert(model.model_id.clone(), (model.num_layers, model.hidden_dim));
-                    tracing::info!(
+                    tracing::debug!(
                         model_id = %model.model_id,
                         num_layers = model.num_layers,
                         hidden_dim = model.hidden_dim,
@@ -164,7 +168,7 @@ impl CoordinatorState {
             nodes.insert(node_id, record);
         }
 
-        tracing::info!(
+        tracing::debug!(
             %node_id,
             num_models = available_models.len(),
             "Node registered"
@@ -193,27 +197,6 @@ impl CoordinatorState {
     pub async fn get_model_info(&self, model_id: &ModelId) -> Option<(usize, usize)> {
         let registry = self.model_registry.read().await;
         registry.get(model_id).copied()
-    }
-
-    #[must_use]
-    pub fn partition_layers(num_layers: usize, num_nodes: usize) -> Vec<Range<usize>> {
-        if num_nodes == 0 {
-            return Vec::new();
-        }
-
-        let base = num_layers / num_nodes;
-        let remainder = num_layers % num_nodes;
-        let mut ranges = Vec::with_capacity(num_nodes);
-        let mut start = 0;
-
-        for i in 0..num_nodes {
-            let extra = usize::from(i < remainder);
-            let end = start + base + extra;
-            ranges.push(start..end);
-            start = end;
-        }
-
-        ranges
     }
 
     #[allow(clippy::significant_drop_tightening)]
@@ -345,7 +328,7 @@ impl CoordinatorState {
             );
         }
 
-        tracing::info!(%pipeline_id, num_stages, "Pipeline created");
+        tracing::debug!(%pipeline_id, num_stages, "Pipeline created");
         Ok(pipeline_id)
     }
 
@@ -370,14 +353,14 @@ impl CoordinatorState {
         for stage in &mut pipeline.stages {
             if stage.node_id == node_id {
                 stage.ready = true;
-                tracing::info!(%node_id, %pipeline_id, "Node marked ready");
+                tracing::debug!(%node_id, %pipeline_id, "Node marked ready");
                 break;
             }
         }
 
         if pipeline.stages.iter().all(|s| s.ready) {
             pipeline.status = PipelineStatus::Ready;
-            tracing::info!(%pipeline_id, "Pipeline ready");
+            tracing::debug!(%pipeline_id, "Pipeline ready");
         }
 
         Ok(())
@@ -417,7 +400,7 @@ impl CoordinatorState {
             assignments.remove(&node_id);
         }
 
-        tracing::info!(%node_id, "Node deregistered");
+        tracing::debug!(%node_id, "Node deregistered");
     }
 
     pub async fn is_registered(&self, node_id: NodeId) -> bool {
@@ -615,6 +598,96 @@ impl CoordinatorState {
     pub async fn is_multi_stage_active(&self, request_id: RequestId) -> bool {
         let active = self.active_multi_stage_requests.read().await;
         active.contains(&request_id)
+    }
+
+    pub async fn start_generation_session(
+        &self,
+        request_id: RequestId,
+        params: &GenerationParams,
+        eos_token: u32,
+        prompt_tokens: usize,
+        seed: u64,
+    ) {
+        let session = GenerationSession::new(request_id, params, eos_token, prompt_tokens, seed);
+        self.generation_sessions
+            .write()
+            .await
+            .insert(request_id, session);
+        tracing::debug!(%request_id, prompt_tokens, eos_token, "Generation session started");
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn on_token_sampled(
+        &self,
+        request_id: RequestId,
+        token: u32,
+    ) -> Result<GenerationStatus, CoordError> {
+        let mut sessions = self.generation_sessions.write().await;
+        let session = sessions.get_mut(&request_id).ok_or_else(|| {
+            CoordError::InvalidRequest(format!(
+                "No generation session found for request {request_id}"
+            ))
+        })?;
+
+        let status = session.on_token(token);
+        tracing::trace!(
+            %request_id,
+            token,
+            generated_count = session.generated_tokens().len(),
+            "Token sampled"
+        );
+        Ok(status)
+    }
+
+    pub async fn get_generation_session(
+        &self,
+        request_id: RequestId,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, HashMap<RequestId, GenerationSession>>, CoordError>
+    {
+        let sessions = self.generation_sessions.read().await;
+        if !sessions.contains_key(&request_id) {
+            return Err(CoordError::InvalidRequest(format!(
+                "No generation session found for request {request_id}"
+            )));
+        }
+        Ok(sessions)
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn get_session_finish_data(
+        &self,
+        request_id: RequestId,
+    ) -> Result<(Vec<u32>, u64), CoordError> {
+        let sessions = self.generation_sessions.read().await;
+        let session = sessions.get(&request_id).ok_or_else(|| {
+            CoordError::InvalidRequest(format!(
+                "No generation session found for request {request_id}"
+            ))
+        })?;
+        Ok((
+            session.generated_tokens().to_vec(),
+            session.time_to_first_token_ms(),
+        ))
+    }
+
+    pub async fn end_generation_session(&self, request_id: RequestId) -> bool {
+        let removed = self
+            .generation_sessions
+            .write()
+            .await
+            .remove(&request_id)
+            .is_some();
+        if removed {
+            tracing::debug!(%request_id, "Generation session ended");
+        }
+        removed
+    }
+
+    pub async fn has_generation_session(&self, request_id: RequestId) -> bool {
+        self.generation_sessions
+            .read()
+            .await
+            .contains_key(&request_id)
     }
 
     pub async fn nodes(&self) -> tokio::sync::RwLockReadGuard<'_, HashMap<NodeId, NodeRecord>> {

@@ -130,6 +130,8 @@ pub struct TokenizerConfig {
     pub chat_template: Option<String>,
     #[serde(default = "default_eos_token")]
     pub eos_token: Option<String>,
+    #[serde(default)]
+    pub bos_token: Option<String>,
 }
 
 fn default_add_bos_token() -> bool {
@@ -154,6 +156,11 @@ impl TokenizerConfig {
     #[must_use]
     pub fn eos_token_str(&self) -> &str {
         self.eos_token.as_deref().unwrap_or("</s>")
+    }
+
+    #[must_use]
+    pub fn bos_token_str(&self) -> &str {
+        self.bos_token.as_deref().unwrap_or("<s>")
     }
 }
 

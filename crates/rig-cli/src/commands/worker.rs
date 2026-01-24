@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use rig_core::{Address, ModelId};
+use rig_core::{Address, ModelId, RigConfig};
 use rig_worker::{WorkerConfig, WorkerNode};
 use tokio::signal;
 
@@ -16,29 +16,24 @@ pub struct WorkerArgs {
     pub runtime: String,
 
     /// Coordinator address to connect to.
-    #[arg(long, env = "RIG_COORDINATOR_ADDR", default_value = "127.0.0.1:50051")]
-    pub coordinator: String,
+    #[arg(long, env = "RIG_COORDINATOR_ADDR")]
+    pub coordinator: Option<String>,
 
     /// Address to listen on for peer connections.
-    #[arg(
-        short,
-        long,
-        env = "RIG_WORKER_LISTEN_ADDR",
-        default_value = "0.0.0.0:0"
-    )]
-    pub listen_addr: SocketAddr,
+    #[arg(short, long, env = "RIG_WORKER_LISTEN_ADDR")]
+    pub listen_addr: Option<SocketAddr>,
 
     /// Model path in format "name:version=path".
     #[arg(short, long = "model", value_name = "NAME:VERSION=PATH")]
     pub models: Vec<String>,
 
     /// Device: "cpu", "metal", "cuda", or "auto".
-    #[arg(long, env = "RIG_DEVICE", default_value = "auto")]
-    pub device: String,
+    #[arg(long, env = "RIG_DEVICE")]
+    pub device: Option<String>,
 
     /// Heartbeat interval in seconds.
-    #[arg(long, env = "RIG_HEARTBEAT_INTERVAL", default_value = "10")]
-    pub heartbeat_interval: u64,
+    #[arg(long, env = "RIG_HEARTBEAT_INTERVAL")]
+    pub heartbeat_interval: Option<u64>,
 }
 
 fn parse_model_spec(spec: &str) -> Result<(ModelId, PathBuf)> {
@@ -60,11 +55,30 @@ fn parse_model_spec(spec: &str) -> Result<(ModelId, PathBuf)> {
     Ok((model_id, path))
 }
 
-pub async fn run_worker(args: WorkerArgs) -> Result<()> {
-    let coordinator_addr: SocketAddr = args
+pub async fn run_worker(args: WorkerArgs, config: &RigConfig) -> Result<()> {
+    let coordinator_str = args
         .coordinator
+        .as_deref()
+        .unwrap_or(&config.worker.coordinator_addr);
+    let coordinator_addr: SocketAddr = coordinator_str
         .parse()
         .context("Invalid coordinator address")?;
+
+    let listen_addr = match args.listen_addr {
+        Some(addr) => addr,
+        None => config
+            .worker
+            .listen_addr
+            .parse()
+            .context("Invalid worker listen address in config")?,
+    };
+
+    let device = args.device.as_deref().unwrap_or(&config.runtime.device);
+
+    let heartbeat_interval = Duration::from_secs(
+        args.heartbeat_interval
+            .unwrap_or(config.worker.heartbeat_interval_secs),
+    );
 
     let mut model_paths: HashMap<ModelId, PathBuf> = HashMap::new();
 
@@ -73,24 +87,22 @@ pub async fn run_worker(args: WorkerArgs) -> Result<()> {
         model_paths.insert(model_id, path);
     }
 
-    let heartbeat_interval = Duration::from_secs(args.heartbeat_interval);
-
-    let config = WorkerConfig::default()
+    let worker_config = WorkerConfig::default()
         .with_coordinator_addr(Address::tcp(coordinator_addr))
-        .with_listen_addr(args.listen_addr)
+        .with_listen_addr(listen_addr)
         .with_heartbeat_interval(heartbeat_interval)
         .with_model_paths(model_paths.clone());
 
     tracing::info!(
         coordinator = %coordinator_addr,
-        listen_addr = %args.listen_addr,
+        listen_addr = %listen_addr,
         models = ?model_paths.keys().collect::<Vec<_>>(),
         "Starting worker"
     );
 
-    let runtime = crate::runtime::create_runtime(&args.device)?;
+    let runtime = crate::runtime::create_runtime(device)?;
 
-    let mut node = WorkerNode::new(config, runtime);
+    let mut node = WorkerNode::new(worker_config, runtime);
 
     let (model_id, _model_path) = model_paths
         .iter()

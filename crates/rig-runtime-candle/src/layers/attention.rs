@@ -1,52 +1,32 @@
 use candle_core::{Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder, linear, linear_no_bias};
 
 use crate::cache::{LayerKvCache, RopeCache};
-use crate::config::TransformerConfig;
+use crate::weights::Weight;
 
-#[derive(Debug, Clone)]
-pub struct CausalSelfAttention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
-    o_proj: Linear,
+pub struct Attention<W: Weight> {
+    q_proj: W,
+    k_proj: W,
+    v_proj: W,
+    o_proj: W,
     num_attention_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
     span: tracing::Span,
 }
 
-impl CausalSelfAttention {
-    pub fn load(
-        vb: VarBuilder,
-        config: &TransformerConfig,
-        use_attention_bias: bool,
-    ) -> Result<Self> {
-        let head_dim = config.head_dim();
-        let num_attention_heads = config.num_attention_heads;
-        let num_kv_heads = config.num_kv_heads();
-
-        let q_dim = num_attention_heads * head_dim;
-        let kv_dim = num_kv_heads * head_dim;
-
-        let (q_proj, k_proj, v_proj) = if use_attention_bias {
-            (
-                linear(config.hidden_size, q_dim, vb.pp("q_proj"))?,
-                linear(config.hidden_size, kv_dim, vb.pp("k_proj"))?,
-                linear(config.hidden_size, kv_dim, vb.pp("v_proj"))?,
-            )
-        } else {
-            (
-                linear_no_bias(config.hidden_size, q_dim, vb.pp("q_proj"))?,
-                linear_no_bias(config.hidden_size, kv_dim, vb.pp("k_proj"))?,
-                linear_no_bias(config.hidden_size, kv_dim, vb.pp("v_proj"))?,
-            )
-        };
-        let o_proj = linear_no_bias(q_dim, config.hidden_size, vb.pp("o_proj"))?;
-
+impl<W: Weight> Attention<W> {
+    #[must_use]
+    pub fn new(
+        q_proj: W,
+        k_proj: W,
+        v_proj: W,
+        o_proj: W,
+        num_attention_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+    ) -> Self {
         let span = tracing::span!(tracing::Level::TRACE, "attn");
-
-        Ok(Self {
+        Self {
             q_proj,
             k_proj,
             v_proj,
@@ -55,7 +35,7 @@ impl CausalSelfAttention {
             num_kv_heads,
             head_dim,
             span,
-        })
+        }
     }
 
     pub fn forward(

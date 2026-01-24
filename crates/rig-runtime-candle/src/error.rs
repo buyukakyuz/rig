@@ -43,8 +43,20 @@ pub enum CandleError {
     #[error("Tokenization failed: {0}")]
     TokenizationFailed(String),
 
+    #[error("Tokenizer config file not found: {0}")]
+    TokenizerConfigNotFound(PathBuf),
+
+    #[error("Tokenizer config missing required field: {0}")]
+    TokenizerConfigMissingField(&'static str),
+
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Unknown model architecture: {0}")]
+    UnknownArchitecture(String),
+
+    #[error("Architecture detection failed: {0}")]
+    ArchitectureDetectionFailed(String),
 }
 
 #[derive(Debug, Error)]

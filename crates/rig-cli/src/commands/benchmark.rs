@@ -6,12 +6,12 @@ use clap::Args;
 use tracing::info;
 
 use rig_core::{
-    Activation, ActivationMetadata, Assignment, DType, ModelId, Neighbors, PartitionSpec,
-    PipelineId, RequestId, Runtime, SamplingParams, Shape, StageId, StopChecker, TensorData,
-    UsageStats,
+    Activation, ActivationMetadata, DType, ModelId, Partition, PartitionSpec, PartitioningStrategy,
+    RequestId, Runtime, SamplingParams, Shape, StopChecker, TensorData, Tokenizer, UsageStats,
 };
-use rig_runtime_candle::{CandleRuntime, Device, memory::query_device_memory};
-use rig_worker::stage::PipelineStage;
+use rig_runtime_candle::{
+    CandleRuntime, Device, ModelFormat, detect_model_format, memory::query_device_memory,
+};
 
 use crate::output::{
     AggregatedMetrics, BenchmarkMetadata, BenchmarkOutput, BenchmarkSummary, MemoryMetrics,
@@ -27,6 +27,10 @@ pub struct BenchmarkArgs {
     /// Device to use: "auto", "cpu", "metal", or "cuda".
     #[arg(long, default_value = "auto")]
     pub device: String,
+
+    /// Number of stages to split the model into.
+    #[arg(short = 'n', long, default_value = "1")]
+    pub stages: usize,
 
     /// Comma-separated prompt sizes (in tokens) to benchmark.
     #[arg(long, default_value = "128,256,512")]
@@ -157,17 +161,9 @@ fn create_decode_activation(request_id: RequestId, token: u32, position: usize) 
     Activation::new(data, shape, metadata)
 }
 
-fn create_standalone_assignment(num_layers: usize) -> Assignment {
-    Assignment::new(
-        PipelineId::new(),
-        StageId::new(0),
-        0..num_layers,
-        Neighbors::none(),
-    )
-}
-
 fn run_single_benchmark(
-    stage: &mut PipelineStage,
+    partitions: &mut [Box<dyn Partition>],
+    tokenizer: &dyn Tokenizer,
     tokens: &[u32],
     generation_length: usize,
     temperature: f32,
@@ -177,20 +173,15 @@ fn run_single_benchmark(
     let prompt_tokens = tokens.len();
     let start = Instant::now();
 
-    let (partition, tokenizer) = stage.partition_and_tokenizer();
-    let tokenizer = tokenizer.ok_or_else(|| anyhow::anyhow!("Model does not have a tokenizer"))?;
     let eos_token = tokenizer.eos_token();
-
     let seed = seed.unwrap_or_else(rand::random::<u64>);
     let sampling = SamplingParams::new(temperature, 1.0, 0, seed);
     let stop_checker = StopChecker::new(eos_token, generation_length);
 
     let prefill_activation = create_benchmark_activation(request_id, tokens);
-    let first_result = partition
-        .forward_sample(prefill_activation, &sampling)?
-        .ok_or_else(|| anyhow::anyhow!("forward_sample returned None"))?;
+    let first_result = run_forward_through_stages(partitions, prefill_activation, &sampling)?;
 
-    let mut generated_tokens = vec![first_result.token];
+    let mut generated_tokens = vec![first_result];
 
     #[allow(clippy::cast_possible_truncation)]
     let time_to_first_token = start.elapsed().as_millis() as u64;
@@ -205,14 +196,14 @@ fn run_single_benchmark(
         let position = prompt_tokens + generated_tokens.len() - 1;
 
         let decode_activation = create_decode_activation(request_id, last_token, position);
-        let result = partition
-            .forward_sample(decode_activation, &sampling)?
-            .ok_or_else(|| anyhow::anyhow!("forward_sample returned None"))?;
+        let token = run_forward_through_stages(partitions, decode_activation, &sampling)?;
 
-        generated_tokens.push(result.token);
+        generated_tokens.push(token);
     }
 
-    partition.release_request_cache(request_id);
+    for partition in partitions.iter() {
+        partition.release_request_cache(request_id);
+    }
 
     #[allow(clippy::cast_possible_truncation)]
     let total_time = start.elapsed().as_millis() as u64;
@@ -223,6 +214,35 @@ fn run_single_benchmark(
         total_time_ms: total_time,
         time_to_first_token_ms: time_to_first_token,
     })
+}
+
+fn run_forward_through_stages(
+    partitions: &mut [Box<dyn Partition>],
+    input: Activation,
+    sampling: &SamplingParams,
+) -> Result<u32> {
+    let num_partitions = partitions.len();
+
+    if num_partitions == 1 {
+        let result = partitions[0]
+            .forward_sample(input, sampling)?
+            .ok_or_else(|| anyhow::anyhow!("forward_sample returned None"))?;
+        return Ok(result.token);
+    }
+
+    let mut activation = input;
+
+    for (i, partition) in partitions.iter_mut().enumerate() {
+        if i == num_partitions - 1 {
+            let result = partition
+                .forward_sample(activation, sampling)?
+                .ok_or_else(|| anyhow::anyhow!("forward_sample returned None"))?;
+            return Ok(result.token);
+        }
+        activation = partition.forward(activation)?;
+    }
+
+    unreachable!("Should have returned from last stage")
 }
 
 fn compute_single_run_metrics(usage: &UsageStats, run_index: usize) -> SingleRunMetrics {
@@ -392,12 +412,66 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         .discover_model(ModelId::new(model_name, "v1"), &args.model)
         .context("Failed to discover model")?;
 
-    let partition_spec = PartitionSpec::new(0..model_spec.num_layers, DType::F16);
+    let max_prompt = prompt_sizes.iter().max().copied().unwrap_or(128);
+    let required_context = max_prompt + args.generation_length + 64;
 
-    let loaded = runtime
-        .load_partition(&model_spec, &partition_spec)
-        .await
-        .context("Failed to load model partition")?;
+    if !args.quiet {
+        eprintln!("  Stages: {}", args.stages);
+        eprintln!(
+            "  Required context length: {required_context} (max_prompt={max_prompt} + gen={} + margin=64)",
+            args.generation_length
+        );
+    }
+
+    let strategy = PartitioningStrategy::even_split(args.stages);
+    let layer_ranges = strategy
+        .compute_ranges(model_spec.num_layers, args.stages)
+        .context("Failed to compute layer ranges")?;
+
+    if !args.quiet && args.stages > 1 {
+        for (i, range) in layer_ranges.iter().enumerate() {
+            eprintln!("  Stage {}: layers {:?}", i + 1, range);
+        }
+    }
+
+    let mut partitions: Vec<Box<dyn Partition>> = Vec::with_capacity(args.stages);
+    let mut tokenizer_box: Option<Box<dyn Tokenizer>> = None;
+    let model_format = detect_model_format(&args.model);
+
+    for (i, range) in layer_ranges.iter().enumerate() {
+        let partition_spec = PartitionSpec::new(range.clone(), DType::F16);
+
+        let loaded =
+            match &model_format {
+                ModelFormat::Gguf(_) => CandleRuntime::load_gguf_partition_with_context(
+                    args.model.clone(),
+                    partition_spec,
+                    device.clone(),
+                    required_context,
+                )
+                .await
+                .with_context(|| format!("Failed to load GGUF partition for stage {}", i + 1))?,
+                ModelFormat::Safetensor => runtime
+                    .load_partition(&model_spec, &partition_spec)
+                    .await
+                    .with_context(|| format!("Failed to load partition for stage {}", i + 1))?,
+            };
+
+        let (partition, tokenizer) = loaded.into_parts();
+
+        if tokenizer_box.is_none() {
+            tokenizer_box = tokenizer;
+        }
+
+        partitions.push(partition);
+
+        if !args.quiet {
+            eprintln!("  Loaded stage {}/{}", i + 1, args.stages);
+        }
+    }
+
+    let tokenizer =
+        tokenizer_box.ok_or_else(|| anyhow::anyhow!("Model does not have a tokenizer"))?;
 
     let (post_load_free, _) = query_device_memory(&device).unwrap_or_else(|e| {
         tracing::warn!("Failed to query device memory after load: {e}");
@@ -412,15 +486,8 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
         );
     }
 
-    let assignment = create_standalone_assignment(model_spec.num_layers);
-    let mut stage = PipelineStage::from_loaded(loaded, assignment, None, None);
-
-    let (bos_token, vocab_size) = {
-        let tokenizer = stage
-            .tokenizer()
-            .ok_or_else(|| anyhow::anyhow!("Model does not have a tokenizer"))?;
-        (tokenizer.bos_token(), tokenizer.vocab_size())
-    };
+    let bos_token = tokenizer.bos_token();
+    let vocab_size = tokenizer.vocab_size();
 
     if args.warmup > 0 && !args.quiet {
         eprintln!("Running {} warmup iteration(s)...", args.warmup);
@@ -428,7 +495,14 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
 
     for i in 0..args.warmup {
         let warmup_tokens = generate_test_tokens(bos_token, vocab_size, 32);
-        run_single_benchmark(&mut stage, &warmup_tokens, 16, args.temperature, args.seed)?;
+        run_single_benchmark(
+            &mut partitions,
+            tokenizer.as_ref(),
+            &warmup_tokens,
+            16,
+            args.temperature,
+            args.seed,
+        )?;
         if !args.quiet {
             eprintln!("  Warmup {}/{} complete", i + 1, args.warmup);
         }
@@ -446,7 +520,8 @@ pub async fn run_benchmark(args: BenchmarkArgs) -> Result<()> {
 
         for run_idx in 0..args.runs {
             let usage = run_single_benchmark(
-                &mut stage,
+                &mut partitions,
+                tokenizer.as_ref(),
                 &test_tokens,
                 args.generation_length,
                 args.temperature,
