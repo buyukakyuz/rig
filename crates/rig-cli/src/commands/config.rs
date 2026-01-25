@@ -4,6 +4,8 @@ use anyhow::Result;
 use clap::Args;
 use rig_core::RigConfig;
 
+use crate::config::RigConfigLoader;
+
 #[derive(Debug, Args)]
 pub struct ConfigArgs {
     /// Output path for generated config.

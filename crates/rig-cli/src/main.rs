@@ -6,6 +6,9 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod client;
 mod commands;
+mod config;
+
+use config::RigConfigLoader;
 mod output;
 mod runtime;
 
