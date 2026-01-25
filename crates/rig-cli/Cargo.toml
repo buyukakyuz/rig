@@ -15,9 +15,9 @@ path = "src/main.rs"
 rig-core.workspace = true
 rig-coordinator.workspace = true
 rig-worker.workspace = true
-rig-transport-tcp = { path = "../rig-transport-tcp" }
-rig-message-bincode = { path = "../rig-message-bincode" }
-rig-runtime-candle = { path = "../rig-runtime-candle", optional = true }
+rig-transport-tcp.workspace = true
+rig-message-bincode.workspace = true
+rig-runtime-candle = { workspace = true, optional = true }
 
 tokio.workspace = true
 anyhow.workspace = true
