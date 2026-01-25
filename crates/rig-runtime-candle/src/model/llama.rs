@@ -6,6 +6,7 @@ use super::{
 #[derive(Debug, Clone, Copy)]
 pub struct LlamaArchitecture;
 
+#[allow(clippy::unused_self)]
 impl ModelArchitecture for LlamaArchitecture {
     fn name(&self) -> &'static str {
         "llama"
@@ -74,7 +75,7 @@ mod tests {
     fn test_llama_architecture() {
         let arch = LlamaArchitecture;
         assert_eq!(arch.name(), "llama");
-        assert_eq!(arch.activation(), ActivationFn::Silu);
+        assert_eq!(arch.activation(), ActivationFn::SwiGLU);
         assert_eq!(arch.default_rms_norm_eps(), 1e-5);
         assert_eq!(arch.default_rope_theta(), 10000.0);
         assert_eq!(arch.attention_config(), AttentionConfig::NO_BIAS);

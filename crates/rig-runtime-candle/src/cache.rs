@@ -14,7 +14,7 @@ pub struct Llama3RopeConfig {
 
 impl Llama3RopeConfig {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         factor: f32,
         low_freq_factor: f32,
         high_freq_factor: f32,
@@ -54,6 +54,7 @@ impl RopeCache {
         Self::with_scaling(head_dim, max_seq_len, theta, None, dtype, device)
     }
 
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     pub fn with_scaling(
         head_dim: usize,
         max_seq_len: usize,
@@ -122,12 +123,12 @@ impl RopeCache {
     }
 
     #[must_use]
-    pub fn cos(&self) -> &Tensor {
+    pub const fn cos(&self) -> &Tensor {
         &self.cos
     }
 
     #[must_use]
-    pub fn sin(&self) -> &Tensor {
+    pub const fn sin(&self) -> &Tensor {
         &self.sin
     }
 
@@ -220,7 +221,7 @@ impl LayerKvCache {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub const fn clear(&mut self) {
         self.current_len = 0;
     }
 }

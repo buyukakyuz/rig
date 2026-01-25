@@ -6,6 +6,7 @@ use super::{
 #[derive(Debug, Clone, Copy)]
 pub struct MistralArchitecture;
 
+#[allow(clippy::unused_self)]
 impl ModelArchitecture for MistralArchitecture {
     fn name(&self) -> &'static str {
         "mistral"

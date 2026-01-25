@@ -39,7 +39,7 @@ pub struct CandleRuntime {
 
 impl CandleRuntime {
     pub fn new() -> Result<Self, CandleError> {
-        let device = Self::select_device()?;
+        let device = Self::select_device();
         Self::with_device(device)
     }
 
@@ -58,11 +58,7 @@ impl CandleRuntime {
             "Device memory detected"
         );
 
-        let supported_dtypes = match &device {
-            Device::Cpu => vec![DType::F32, DType::F16, DType::BF16],
-            Device::Cuda(_) => vec![DType::F32, DType::F16, DType::BF16],
-            Device::Metal(_) => vec![DType::F32, DType::F16, DType::BF16],
-        };
+        let supported_dtypes = vec![DType::F32, DType::F16, DType::BF16];
 
         let runtime_type = match &device {
             Device::Cpu => "candle_cpu",
@@ -83,12 +79,12 @@ impl CandleRuntime {
         Self::with_device(Device::Cpu)
     }
 
-    fn select_device() -> Result<Device, CandleError> {
+    fn select_device() -> Device {
         #[cfg(feature = "metal")]
         {
             if let Ok(device) = Device::new_metal(0) {
                 tracing::debug!("Using Metal device");
-                return Ok(device);
+                return device;
             }
         }
 
@@ -96,16 +92,16 @@ impl CandleRuntime {
         {
             if let Ok(device) = Device::new_cuda(0) {
                 tracing::debug!("Using CUDA device 0");
-                return Ok(device);
+                return device;
             }
         }
 
         tracing::debug!("Using CPU device");
-        Ok(Device::Cpu)
+        Device::Cpu
     }
 
     #[must_use]
-    pub fn device(&self) -> &Device {
+    pub const fn device(&self) -> &Device {
         &self.device
     }
 

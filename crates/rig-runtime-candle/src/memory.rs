@@ -20,7 +20,7 @@ pub fn query_device_memory(device: &Device) -> Result<(u64, u64), CandleError> {
     }
 }
 
-fn query_cpu_memory() -> (u64, u64) {
+const fn query_cpu_memory() -> (u64, u64) {
     (0, 0)
 }
 

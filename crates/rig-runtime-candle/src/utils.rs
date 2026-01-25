@@ -71,6 +71,7 @@ pub fn activation_to_tensor(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn tensor_to_activation(
     tensor: Tensor,
     dtype: DType,

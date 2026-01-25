@@ -6,6 +6,7 @@ use super::{
 #[derive(Debug, Clone, Copy)]
 pub struct Qwen2Architecture;
 
+#[allow(clippy::unused_self)]
 impl ModelArchitecture for Qwen2Architecture {
     fn name(&self) -> &'static str {
         "qwen2"

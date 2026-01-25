@@ -62,6 +62,7 @@ impl<W: Weight> LmHead<W> {
 }
 
 impl UnifiedPartition<Linear> {
+    #[allow(clippy::too_many_lines)]
     pub fn load_safetensor(
         model_path: &std::path::Path,
         spec: &PartitionSpec,
@@ -201,6 +202,8 @@ impl UnifiedPartition<QuantizedLinear> {
     ) -> Result<Self> {
         Self::load_gguf_with_context(model_path, spec, device, DEFAULT_MAX_CONTEXT_LENGTH)
     }
+
+    #[allow(clippy::too_many_lines)]
     pub fn load_gguf_with_context(
         model_path: &std::path::Path,
         spec: &PartitionSpec,
@@ -324,6 +327,7 @@ impl UnifiedPartition<QuantizedLinear> {
 }
 
 impl<W: Weight> UnifiedPartition<W> {
+    #[allow(clippy::significant_drop_tightening)]
     fn forward_impl(&self, input: Tensor) -> Result<Tensor> {
         let mut x = input;
 
@@ -370,6 +374,7 @@ impl<W: Weight> UnifiedPartition<W> {
         Ok(x)
     }
 
+    #[allow(clippy::significant_drop_tightening, clippy::needless_pass_by_value)]
     fn forward_sample_impl(
         &self,
         input: Activation,
@@ -452,17 +457,17 @@ impl<W: Weight> UnifiedPartition<W> {
     }
 
     #[must_use]
-    pub fn has_embeddings(&self) -> bool {
+    pub const fn has_embeddings(&self) -> bool {
         self.embed_tokens.is_some()
     }
 
     #[must_use]
-    pub fn has_lm_head(&self) -> bool {
+    pub const fn has_lm_head(&self) -> bool {
         self.lm_head.is_some()
     }
 
     #[must_use]
-    pub fn device(&self) -> &Device {
+    pub const fn device(&self) -> &Device {
         &self.device
     }
 
@@ -511,7 +516,7 @@ impl<W: Weight> rig_core::Partition for UnifiedPartition<W> {
             .forward_impl(tensor)
             .map_err(|e| PartitionError::ForwardFailed(e.to_string()))?;
 
-        tensor_to_activation(output, self.dtype, input.metadata.clone())
+        tensor_to_activation(output, self.dtype, input.metadata)
             .map_err(|e| PartitionError::ForwardFailed(e.to_string()))
     }
 
@@ -547,7 +552,7 @@ fn convert_dtype(dtype: rig_core::DType) -> Result<DType> {
     }
 }
 
-fn convert_activation(config: &TransformerConfig) -> ActivationFn {
+const fn convert_activation(config: &TransformerConfig) -> ActivationFn {
     match config.hidden_act {
         crate::config::Activation::Silu => ActivationFn::Silu,
         crate::config::Activation::Gelu => ActivationFn::Gelu,
@@ -786,7 +791,6 @@ fn estimate_memory(
     tie_word_embeddings: bool,
 ) -> MemoryUsage {
     let dtype_size = match spec.dtype {
-        rig_core::DType::F32 => 4,
         rig_core::DType::F16 | rig_core::DType::BF16 => 2,
         _ => 4,
     };

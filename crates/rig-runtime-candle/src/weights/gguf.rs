@@ -26,12 +26,12 @@ impl GgufLoader {
     }
 
     #[must_use]
-    pub fn content(&self) -> &gguf_file::Content {
+    pub const fn content(&self) -> &gguf_file::Content {
         &self.content
     }
 
     #[must_use]
-    pub fn device(&self) -> &Device {
+    pub const fn device(&self) -> &Device {
         &self.device
     }
 

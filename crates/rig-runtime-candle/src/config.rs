@@ -73,15 +73,15 @@ impl EosTokenId {
     }
 }
 
-fn default_rope_theta() -> f64 {
+const fn default_rope_theta() -> f64 {
     10000.0
 }
 
-fn default_rms_norm_eps() -> f64 {
+const fn default_rms_norm_eps() -> f64 {
     1e-6
 }
 
-fn default_max_position_embeddings() -> usize {
+const fn default_max_position_embeddings() -> usize {
     4096
 }
 
@@ -102,7 +102,7 @@ impl TransformerConfig {
     }
 
     #[must_use]
-    pub fn head_dim(&self) -> usize {
+    pub const fn head_dim(&self) -> usize {
         self.hidden_size / self.num_attention_heads
     }
 
@@ -134,11 +134,11 @@ pub struct TokenizerConfig {
     pub bos_token: Option<String>,
 }
 
-fn default_add_bos_token() -> bool {
+const fn default_add_bos_token() -> bool {
     true
 }
 
-fn default_eos_token() -> Option<String> {
+const fn default_eos_token() -> Option<String> {
     None
 }
 

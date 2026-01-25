@@ -32,6 +32,7 @@ impl rig_core::TokenDecodeStream for CandleDecodeStream {
         })
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn flush(&mut self) -> std::result::Result<Option<String>, rig_core::TokenizerError> {
         Ok(None)
     }

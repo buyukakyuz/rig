@@ -12,22 +12,22 @@ pub struct QuantizedLinear {
 
 impl QuantizedLinear {
     #[must_use]
-    pub fn new(weight: QMatMul, bias: Option<Tensor>) -> Self {
+    pub const fn new(weight: QMatMul, bias: Option<Tensor>) -> Self {
         Self { weight, bias }
     }
 
     #[must_use]
-    pub fn without_bias(weight: QMatMul) -> Self {
+    pub const fn without_bias(weight: QMatMul) -> Self {
         Self { weight, bias: None }
     }
 
     #[must_use]
-    pub fn qmatmul(&self) -> &QMatMul {
+    pub const fn qmatmul(&self) -> &QMatMul {
         &self.weight
     }
 
     #[must_use]
-    pub fn bias(&self) -> Option<&Tensor> {
+    pub const fn bias(&self) -> Option<&Tensor> {
         self.bias.as_ref()
     }
 }

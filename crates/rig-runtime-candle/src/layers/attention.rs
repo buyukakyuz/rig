@@ -38,6 +38,7 @@ impl<W: Weight> Attention<W> {
         }
     }
 
+    #[allow(clippy::cast_precision_loss)]
     pub fn forward(
         &self,
         x: &Tensor,
@@ -61,7 +62,7 @@ impl<W: Weight> Attention<W> {
         let k = k.transpose(1, 2)?.contiguous()?;
         let v = v.transpose(1, 2)?.contiguous()?;
 
-        let (q, k) = self.apply_rotary_emb(&q, &k, index_pos, rope_cache)?;
+        let (q, k) = Self::apply_rotary_emb(&q, &k, index_pos, rope_cache)?;
 
         let (k, v) = match kv_cache {
             Some(cache) => {
@@ -94,7 +95,6 @@ impl<W: Weight> Attention<W> {
     }
 
     fn apply_rotary_emb(
-        &self,
         q: &Tensor,
         k: &Tensor,
         index_pos: usize,

@@ -57,10 +57,11 @@ pub struct GgufConfig {
 
 impl GgufConfig {
     #[must_use]
-    pub fn head_dim(&self) -> usize {
+    pub const fn head_dim(&self) -> usize {
         self.hidden_size / self.num_attention_heads
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn from_gguf_content(content: &gguf_file::Content) -> ConfigResult<Self> {
         let arch = content
             .metadata
@@ -182,7 +183,7 @@ impl GgufConfig {
     }
 
     #[must_use]
-    pub fn with_rope_scaling(mut self, rope_scaling: Option<Llama3RopeConfig>) -> Self {
+    pub const fn with_rope_scaling(mut self, rope_scaling: Option<Llama3RopeConfig>) -> Self {
         self.rope_scaling = rope_scaling;
         self
     }

@@ -28,11 +28,11 @@ impl CandleKvCache {
     }
 
     #[must_use]
-    pub fn tensor_cache(&self) -> &PartitionKvCache {
+    pub const fn tensor_cache(&self) -> &PartitionKvCache {
         &self.tensor_cache
     }
 
-    pub fn tensor_cache_mut(&mut self) -> &mut PartitionKvCache {
+    pub const fn tensor_cache_mut(&mut self) -> &mut PartitionKvCache {
         &mut self.tensor_cache
     }
 
