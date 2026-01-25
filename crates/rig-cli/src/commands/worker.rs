@@ -6,6 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rig_core::{Address, ModelId, RigConfig};
+use rig_message_bincode::BincodeCodec;
+use rig_transport_tcp::{TcpConfig, TcpTransportFactory};
 use rig_worker::{WorkerConfig, WorkerNode};
 use tokio::signal;
 
@@ -102,7 +104,11 @@ pub async fn run_worker(args: WorkerArgs, config: &RigConfig) -> Result<()> {
 
     let runtime = crate::runtime::create_runtime(device)?;
 
-    let mut node = WorkerNode::new(worker_config, runtime);
+    let tcp_config = TcpConfig::default().with_read_timeout(None);
+    let transport_factory = TcpTransportFactory::with_config(tcp_config);
+    let codec = BincodeCodec::new();
+
+    let mut node = WorkerNode::new(worker_config, runtime, transport_factory, codec);
 
     let (model_id, _model_path) = model_paths
         .iter()

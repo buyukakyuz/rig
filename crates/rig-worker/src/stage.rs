@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use rig_core::{Activation, Assignment, LoadedPartition, Partition, SamplingParams, Tokenizer};
+use rig_core::{
+    Activation, Assignment, Codec, CoordinatorIncoming, CoordinatorOutgoing, FramedTransport,
+    LoadedPartition, Partition, SamplingParams, Tokenizer,
+};
 use tokio::sync::{Mutex, broadcast};
 use tracing::{debug, instrument, trace, warn};
 
@@ -8,22 +11,32 @@ use crate::coordinator_client::CoordinatorClient;
 use crate::error::WorkerError;
 use crate::peer_connection::PeerConnection;
 
-pub struct PipelineStage {
+pub type SharedCoordinatorClient<T, C> = Arc<Mutex<CoordinatorClient<T, C>>>;
+
+pub struct PipelineStage<T, C>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
     partition: Box<dyn Partition>,
     tokenizer: Option<Box<dyn Tokenizer>>,
     assignment: Assignment,
-    prev_peer: Option<PeerConnection>,
-    next_peer: Option<PeerConnection>,
-    coord_client: Option<Arc<Mutex<CoordinatorClient>>>,
+    prev_peer: Option<PeerConnection<T>>,
+    next_peer: Option<PeerConnection<T>>,
+    coord_client: Option<SharedCoordinatorClient<T, C>>,
 }
 
-impl PipelineStage {
+impl<T, C> PipelineStage<T, C>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
     #[must_use]
     pub fn from_loaded(
         loaded: LoadedPartition,
         assignment: Assignment,
-        prev_peer: Option<PeerConnection>,
-        next_peer: Option<PeerConnection>,
+        prev_peer: Option<PeerConnection<T>>,
+        next_peer: Option<PeerConnection<T>>,
     ) -> Self {
         let (partition, tokenizer) = loaded.into_parts();
         Self {
@@ -41,8 +54,8 @@ impl PipelineStage {
         partition: Box<dyn Partition>,
         tokenizer: Option<Box<dyn Tokenizer>>,
         assignment: Assignment,
-        prev_peer: Option<PeerConnection>,
-        next_peer: Option<PeerConnection>,
+        prev_peer: Option<PeerConnection<T>>,
+        next_peer: Option<PeerConnection<T>>,
     ) -> Self {
         Self {
             partition,
@@ -89,11 +102,11 @@ impl PipelineStage {
         self.assignment.neighbors.next.is_none()
     }
 
-    pub fn set_prev_peer(&mut self, peer: PeerConnection) {
+    pub fn set_prev_peer(&mut self, peer: PeerConnection<T>) {
         self.prev_peer = Some(peer);
     }
 
-    pub fn set_coordinator_client(&mut self, client: Arc<Mutex<CoordinatorClient>>) {
+    pub fn set_coordinator_client(&mut self, client: SharedCoordinatorClient<T, C>) {
         self.coord_client = Some(client);
     }
 
@@ -266,7 +279,11 @@ impl PipelineStage {
     }
 }
 
-impl std::fmt::Debug for PipelineStage {
+impl<T, C> std::fmt::Debug for PipelineStage<T, C>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PipelineStage")
             .field("stage_id", &self.assignment.stage_id)
@@ -278,18 +295,26 @@ impl std::fmt::Debug for PipelineStage {
     }
 }
 
-pub struct PipelineStageBuilder {
+pub struct PipelineStageBuilder<T, C>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
     partition: Option<Box<dyn Partition>>,
     tokenizer: Option<Box<dyn Tokenizer>>,
     assignment: Option<Assignment>,
-    prev_peer: Option<PeerConnection>,
-    next_peer: Option<PeerConnection>,
-    coord_client: Option<Arc<Mutex<CoordinatorClient>>>,
+    prev_peer: Option<PeerConnection<T>>,
+    next_peer: Option<PeerConnection<T>>,
+    coord_client: Option<SharedCoordinatorClient<T, C>>,
 }
 
-impl PipelineStageBuilder {
+impl<T, C> PipelineStageBuilder<T, C>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             partition: None,
             tokenizer: None,
@@ -327,24 +352,24 @@ impl PipelineStageBuilder {
     }
 
     #[must_use]
-    pub fn with_prev_peer(mut self, peer: PeerConnection) -> Self {
+    pub fn with_prev_peer(mut self, peer: PeerConnection<T>) -> Self {
         self.prev_peer = Some(peer);
         self
     }
 
     #[must_use]
-    pub fn with_next_peer(mut self, peer: PeerConnection) -> Self {
+    pub fn with_next_peer(mut self, peer: PeerConnection<T>) -> Self {
         self.next_peer = Some(peer);
         self
     }
 
     #[must_use]
-    pub fn with_coordinator_client(mut self, client: Arc<Mutex<CoordinatorClient>>) -> Self {
+    pub fn with_coordinator_client(mut self, client: SharedCoordinatorClient<T, C>) -> Self {
         self.coord_client = Some(client);
         self
     }
 
-    pub fn build(self) -> Result<PipelineStage, WorkerError> {
+    pub fn build(self) -> Result<PipelineStage<T, C>, WorkerError> {
         let partition = self
             .partition
             .ok_or_else(|| WorkerError::config("Partition is required"))?;
@@ -368,7 +393,11 @@ impl PipelineStageBuilder {
     }
 }
 
-impl Default for PipelineStageBuilder {
+impl<T, C> Default for PipelineStageBuilder<T, C>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -377,10 +406,14 @@ impl Default for PipelineStageBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rig_message_bincode::BincodeCodec;
+    use rig_transport_tcp::TcpTransport;
+
+    type TestBuilder = PipelineStageBuilder<TcpTransport, BincodeCodec>;
 
     #[test]
     fn builder_requires_partition() {
-        let result = PipelineStageBuilder::new().build();
+        let result = TestBuilder::new().build();
         assert!(result.is_err());
     }
 
@@ -414,7 +447,7 @@ mod tests {
             }
         }
 
-        let result = PipelineStageBuilder::new()
+        let result = TestBuilder::new()
             .with_partition(Box::new(MockPartition::new()))
             .build();
 

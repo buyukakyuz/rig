@@ -1,10 +1,7 @@
-use std::net::SocketAddr;
-
 use rig_core::{
-    Activation, ActivationMetadata, Address, DType, FramedTransport, NodeId, RequestId, Shape,
-    TensorData, TransportFactory,
+    Activation, ActivationMetadata, Address, DType, FramedTransport, Listener, NodeId, RequestId,
+    Shape, TensorData,
 };
-use rig_transport_tcp::{TcpConfig, TcpListener, TcpTransport, TcpTransportFactory};
 use tracing::{debug, instrument};
 
 use crate::error::WorkerError;
@@ -21,27 +18,18 @@ fn parse_header_bytes<const N: usize>(slice: &[u8]) -> Result<[u8; N], WorkerErr
     })
 }
 
-pub struct PeerConnection {
-    transport: TcpTransport,
+pub struct PeerConnection<T: FramedTransport> {
+    transport: T,
     peer_node_id: NodeId,
 }
 
-impl PeerConnection {
+impl<T: FramedTransport> PeerConnection<T> {
     #[must_use]
-    pub const fn new(transport: TcpTransport, peer_node_id: NodeId) -> Self {
+    pub const fn new(transport: T, peer_node_id: NodeId) -> Self {
         Self {
             transport,
             peer_node_id,
         }
-    }
-
-    #[instrument(skip_all, fields(addr = %addr))]
-    pub async fn connect(addr: &Address, peer_node_id: NodeId) -> Result<Self, WorkerError> {
-        let config = TcpConfig::new().with_read_timeout(None);
-        let factory = TcpTransportFactory::with_config(config);
-        let transport = factory.connect(addr).await?;
-        debug!(%peer_node_id, "Connected to peer");
-        Ok(Self::new(transport, peer_node_id))
     }
 
     #[must_use]
@@ -71,7 +59,7 @@ impl PeerConnection {
     }
 }
 
-impl std::fmt::Debug for PeerConnection {
+impl<T: FramedTransport> std::fmt::Debug for PeerConnection<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerConnection")
             .field("peer_node_id", &self.peer_node_id)
@@ -79,29 +67,27 @@ impl std::fmt::Debug for PeerConnection {
     }
 }
 
-pub struct PeerListener {
-    listener: TcpListener,
+pub struct PeerListener<L: Listener> {
+    listener: L,
 }
 
-impl PeerListener {
-    pub async fn bind(addr: SocketAddr) -> Result<Self, WorkerError> {
-        let config = TcpConfig::new().with_read_timeout(None);
-        let listener = TcpListener::bind_addr_with_config(addr, config)
-            .await
-            .map_err(WorkerError::Transport)?;
-        Ok(Self { listener })
+impl<L: Listener> PeerListener<L> {
+    #[must_use]
+    pub const fn new(listener: L) -> Self {
+        Self { listener }
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr, WorkerError> {
-        self.listener
-            .local_socket_addr()
-            .map_err(WorkerError::Transport)
+    pub fn local_addr(&self) -> Result<Address, WorkerError> {
+        self.listener.local_addr().map_err(WorkerError::Transport)
     }
 
-    pub async fn accept(&self, peer_node_id: NodeId) -> Result<PeerConnection, WorkerError> {
+    pub async fn accept(
+        &self,
+        peer_node_id: NodeId,
+    ) -> Result<PeerConnection<L::Transport>, WorkerError> {
         let (transport, addr) = self
             .listener
-            .accept_with_socket_addr()
+            .accept()
             .await
             .map_err(WorkerError::Transport)?;
         debug!(%addr, %peer_node_id, "Accepted peer connection");
@@ -109,10 +95,10 @@ impl PeerListener {
     }
 }
 
-impl std::fmt::Debug for PeerListener {
+impl<L: Listener> std::fmt::Debug for PeerListener<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerListener")
-            .field("local_addr", &self.listener.local_socket_addr())
+            .field("local_addr", &self.listener.local_addr())
             .finish_non_exhaustive()
     }
 }

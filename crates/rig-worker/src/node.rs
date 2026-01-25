@@ -1,39 +1,59 @@
 use std::time::{Duration, Instant};
 
 use rig_core::{
-    Activation, ActivationMetadata, Address, Assignment, CoordinatorMessage, DType, InferenceInput,
-    InferenceRequest, LoadedPartition, ModelId, ModelInfo, ModelSpec, NodeId, NodeInfo, NodeStatus,
-    Partition, PartitionSpec, RequestId, Runtime, SamplingParams, Shape, StopChecker, TensorData,
-    Tokenizer, UsageStats,
+    Activation, ActivationMetadata, Address, Assignment, Codec, CoordinatorIncoming,
+    CoordinatorMessage, CoordinatorOutgoing, DType, FramedTransport, InferenceInput,
+    InferenceRequest, Listener, LoadedPartition, ModelId, ModelInfo, ModelSpec, NodeId, NodeInfo,
+    NodeStatus, Partition, PartitionSpec, RequestId, Runtime, SamplingParams, Shape, StopChecker,
+    TensorData, Tokenizer, TransportFactory, UsageStats,
 };
 use tokio::sync::broadcast;
 use tracing::{debug, instrument, trace, warn};
 
 use crate::config::WorkerConfig;
-use crate::coordinator_client::{CoordinatorClient, create_heartbeat_client};
+use crate::coordinator_client::CoordinatorClient;
 use crate::error::WorkerError;
 use crate::peer_connection::{PeerConnection, PeerListener};
 use crate::stage::PipelineStage;
-pub struct WorkerNode<R: Runtime> {
+
+pub type PeerConnectionPair<T> = (Option<PeerConnection<T>>, Option<PeerConnection<T>>);
+
+pub struct WorkerNode<R, F, C>
+where
+    R: Runtime,
+    F: TransportFactory + Clone,
+    F::Transport: 'static,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing> + Clone + 'static,
+{
     node_id: Option<NodeId>,
     config: WorkerConfig,
     runtime: R,
-    coordinator_client: Option<CoordinatorClient>,
-    stage: Option<PipelineStage>,
-    peer_listener: Option<PeerListener>,
+    transport_factory: F,
+    codec: C,
+    coordinator_client: Option<CoordinatorClient<F::Transport, C>>,
+    stage: Option<PipelineStage<F::Transport, C>>,
+    peer_listener: Option<PeerListener<F::Listener>>,
     shutdown_tx: broadcast::Sender<()>,
     model_info: Option<ModelInfo>,
 }
 
-impl<R: Runtime> WorkerNode<R> {
+impl<R, F, C> WorkerNode<R, F, C>
+where
+    R: Runtime,
+    F: TransportFactory + Clone,
+    F::Transport: 'static,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing> + Clone + 'static,
+{
     #[must_use]
-    pub fn new(config: WorkerConfig, runtime: R) -> Self {
+    pub fn new(config: WorkerConfig, runtime: R, transport_factory: F, codec: C) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
 
         Self {
             node_id: None,
             config,
             runtime,
+            transport_factory,
+            codec,
             coordinator_client: None,
             stage: None,
             peer_listener: None,
@@ -67,21 +87,26 @@ impl<R: Runtime> WorkerNode<R> {
 
     #[instrument(skip(self))]
     pub async fn start_peer_listener(&mut self) -> Result<(), WorkerError> {
-        let listener = PeerListener::bind(self.config.listen_addr).await?;
+        let listen_addr = Address::tcp(self.config.listen_addr);
+        let listener = self.transport_factory.listen(&listen_addr).await?;
         let local_addr = listener.local_addr()?;
         debug!(%local_addr, "Peer listener started");
-        self.peer_listener = Some(listener);
+        self.peer_listener = Some(PeerListener::new(listener));
         Ok(())
     }
 
-    pub fn peer_listen_addr(&self) -> Option<std::net::SocketAddr> {
+    pub fn peer_listen_addr(&self) -> Option<Address> {
         self.peer_listener.as_ref()?.local_addr().ok()
     }
 
     #[instrument(skip(self), fields(addr = %self.config.coordinator_addr))]
     pub async fn connect_to_coordinator(&mut self) -> Result<(), WorkerError> {
         debug!("Connecting to coordinator");
-        let client = CoordinatorClient::connect(&self.config.coordinator_addr).await?;
+        let transport = self
+            .transport_factory
+            .connect(&self.config.coordinator_addr)
+            .await?;
+        let client = CoordinatorClient::new(transport, self.codec.clone());
         self.coordinator_client = Some(client);
         debug!("Connected to coordinator");
         Ok(())
@@ -98,7 +123,7 @@ impl<R: Runtime> WorkerNode<R> {
         let node_id = NodeId::new();
         let info = NodeInfo::new(
             node_id,
-            vec![Address::tcp(listen_addr)],
+            vec![listen_addr],
             NodeStatus::Healthy,
             capabilities,
         );
@@ -122,14 +147,17 @@ impl<R: Runtime> WorkerNode<R> {
     pub async fn start_heartbeat_task(&self) -> Result<(), WorkerError> {
         let node_id = self.node_id.ok_or(WorkerError::NotRegistered)?;
 
-        let coordinator_addr = self.config.coordinator_addr.clone();
+        let transport = self
+            .transport_factory
+            .connect(&self.config.coordinator_addr)
+            .await?;
+        let client = CoordinatorClient::with_node_id(transport, self.codec.clone(), node_id);
+
         let interval = self.config.heartbeat_interval;
         let mut shutdown_rx = self.shutdown_receiver();
 
         tokio::spawn(async move {
-            if let Err(e) =
-                run_heartbeat_loop(node_id, &coordinator_addr, interval, &mut shutdown_rx).await
-            {
+            if let Err(e) = run_heartbeat_loop(node_id, client, interval, &mut shutdown_rx).await {
                 warn!(%node_id, error = %e, "Heartbeat task failed");
             }
         });
@@ -192,14 +220,15 @@ impl<R: Runtime> WorkerNode<R> {
     pub async fn establish_peer_connections(
         &mut self,
         assignment: &Assignment,
-    ) -> Result<(Option<PeerConnection>, Option<PeerConnection>), WorkerError> {
+    ) -> Result<PeerConnectionPair<F::Transport>, WorkerError> {
         let next_peer = if let Some(ref next_addr) = assignment.neighbors.next {
             let addr = next_addr
                 .first_address()
                 .ok_or_else(|| WorkerError::peer_connection("Next peer has no address"))?;
 
             debug!(peer_node_id = %next_addr.node_id, addr = %addr, "Connecting to next stage");
-            Some(PeerConnection::connect(addr, next_addr.node_id).await?)
+            let transport = self.transport_factory.connect(addr).await?;
+            Some(PeerConnection::new(transport, next_addr.node_id))
         } else {
             None
         };
@@ -237,17 +266,17 @@ impl<R: Runtime> WorkerNode<R> {
         Ok(())
     }
 
-    pub fn set_stage(&mut self, stage: PipelineStage) {
+    pub fn set_stage(&mut self, stage: PipelineStage<F::Transport, C>) {
         self.stage = Some(stage);
     }
 
     #[must_use]
-    pub const fn stage(&self) -> Option<&PipelineStage> {
+    pub const fn stage(&self) -> Option<&PipelineStage<F::Transport, C>> {
         self.stage.as_ref()
     }
 
     #[must_use]
-    pub const fn stage_mut(&mut self) -> Option<&mut PipelineStage> {
+    pub const fn stage_mut(&mut self) -> Option<&mut PipelineStage<F::Transport, C>> {
         self.stage.as_mut()
     }
 
@@ -305,10 +334,13 @@ impl<R: Runtime> WorkerNode<R> {
         );
 
         if stage.is_multi_stage_last() {
-            let coordinator_addr = self.config.coordinator_addr.clone();
             let node_id = self.node_id.ok_or(WorkerError::NotRegistered)?;
+            let transport = self
+                .transport_factory
+                .connect(&self.config.coordinator_addr)
+                .await?;
             let coord_client =
-                CoordinatorClient::connect_for_node(&coordinator_addr, node_id).await?;
+                CoordinatorClient::with_node_id(transport, self.codec.clone(), node_id);
             stage
                 .set_coordinator_client(std::sync::Arc::new(tokio::sync::Mutex::new(coord_client)));
             debug!("Multi-stage last stage coordinator client connected");
@@ -455,11 +487,13 @@ impl<R: Runtime> WorkerNode<R> {
     ) -> Result<(), WorkerError> {
         debug!(%request_id, "Entering multi-stage generation loop");
 
-        let mut streaming_client = CoordinatorClient::connect_for_node(
-            &self.config.coordinator_addr,
-            self.node_id.ok_or(WorkerError::NotRegistered)?,
-        )
-        .await?;
+        let node_id = self.node_id.ok_or(WorkerError::NotRegistered)?;
+        let transport = self
+            .transport_factory
+            .connect(&self.config.coordinator_addr)
+            .await?;
+        let mut streaming_client =
+            CoordinatorClient::with_node_id(transport, self.codec.clone(), node_id);
 
         let mut decode_stream = self
             .stage
@@ -560,11 +594,13 @@ impl<R: Runtime> WorkerNode<R> {
         let request_id = request.request_id;
         let params = request.params;
 
-        let mut streaming_client = CoordinatorClient::connect_for_node(
-            &self.config.coordinator_addr,
-            self.node_id.ok_or(WorkerError::NotRegistered)?,
-        )
-        .await?;
+        let node_id = self.node_id.ok_or(WorkerError::NotRegistered)?;
+        let transport = self
+            .transport_factory
+            .connect(&self.config.coordinator_addr)
+            .await?;
+        let mut streaming_client =
+            CoordinatorClient::with_node_id(transport, self.codec.clone(), node_id);
 
         let stage = self.stage.as_mut().ok_or(WorkerError::NoAssignment)?;
 
@@ -659,7 +695,13 @@ impl<R: Runtime> WorkerNode<R> {
     }
 }
 
-impl<R: Runtime> std::fmt::Debug for WorkerNode<R> {
+impl<R, F, C> std::fmt::Debug for WorkerNode<R, F, C>
+where
+    R: Runtime,
+    F: TransportFactory + Clone,
+    F::Transport: 'static,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing> + Clone + 'static,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerNode")
             .field("node_id", &self.node_id)
@@ -670,14 +712,16 @@ impl<R: Runtime> std::fmt::Debug for WorkerNode<R> {
     }
 }
 
-async fn run_heartbeat_loop(
+async fn run_heartbeat_loop<T, C>(
     node_id: NodeId,
-    coordinator_addr: &Address,
+    mut client: CoordinatorClient<T, C>,
     interval: Duration,
     shutdown_rx: &mut broadcast::Receiver<()>,
-) -> Result<(), WorkerError> {
-    let mut client = create_heartbeat_client(coordinator_addr, node_id).await?;
-
+) -> Result<(), WorkerError>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
     let mut heartbeat_interval = tokio::time::interval(interval);
 
     loop {

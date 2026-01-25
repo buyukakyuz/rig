@@ -8,6 +8,6 @@ pub mod stage;
 pub use config::WorkerConfig;
 pub use coordinator_client::CoordinatorClient;
 pub use error::WorkerError;
-pub use node::WorkerNode;
+pub use node::{PeerConnectionPair, WorkerNode};
 pub use peer_connection::{PeerConnection, PeerListener};
-pub use stage::{PipelineStage, PipelineStageBuilder};
+pub use stage::{PipelineStage, PipelineStageBuilder, SharedCoordinatorClient};

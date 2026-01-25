@@ -7,10 +7,11 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+
 [dependencies]
 rig-core.workspace = true
-rig-transport-tcp.workspace = true
-rig-message-bincode.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
@@ -24,6 +25,7 @@ half = "2.4"
 [dev-dependencies]
 rig-coordinator.workspace = true
 rig-transport-tcp.workspace = true
+rig-message-bincode.workspace = true
 
 [lints]
 workspace = true

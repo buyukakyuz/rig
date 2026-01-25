@@ -10,6 +10,8 @@ use clap::Args;
 use rig_coordinator::{CoordinatorConfig, CoordinatorServer, HeartbeatMonitor};
 use rig_core::types::protocol::CliCreatePipelineAutoRequest;
 use rig_core::{Address, GenerationParams, InferenceInput, ModelId, PipelineId, RigConfig};
+use rig_message_bincode::BincodeCodec;
+use rig_transport_tcp::{TcpConfig, TcpTransportFactory};
 use rig_worker::{WorkerConfig, WorkerNode};
 use tokio::sync::broadcast;
 
@@ -154,7 +156,11 @@ impl DemoCluster {
 
             let runtime = crate::runtime::create_runtime(device)?;
 
-            let mut worker = WorkerNode::new(worker_config, runtime);
+            let tcp_config = TcpConfig::default().with_read_timeout(None);
+            let transport_factory = TcpTransportFactory::with_config(tcp_config);
+            let codec = BincodeCodec::new();
+
+            let mut worker = WorkerNode::new(worker_config, runtime, transport_factory, codec);
             let worker_shutdown_rx = shutdown_tx.subscribe();
             let worker_model_id = model_id.clone();
             let worker_num = i + 1;

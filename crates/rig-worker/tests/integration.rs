@@ -6,8 +6,19 @@ use std::time::Duration;
 
 use rig_coordinator::handler::ConnectionHandler;
 use rig_coordinator::{CoordinatorConfig, CoordinatorServer, CoordinatorState};
-use rig_core::{Address, DType, ModelId, NodeId, PipelineConfig};
+use rig_core::{Address, DType, ModelId, NodeId, PipelineConfig, TransportFactory};
+use rig_message_bincode::BincodeCodec;
+use rig_transport_tcp::{TcpConfig, TcpTransport, TcpTransportFactory};
 use rig_worker::CoordinatorClient;
+
+type TestCoordinatorClient = CoordinatorClient<TcpTransport, BincodeCodec>;
+
+async fn connect_to_coordinator(addr: &Address) -> TestCoordinatorClient {
+    let config = TcpConfig::default().with_read_timeout(None);
+    let factory = TcpTransportFactory::with_config(config);
+    let transport = factory.connect(addr).await.expect("Failed to connect");
+    CoordinatorClient::new(transport, BincodeCodec::new())
+}
 
 struct TestCoordinator {
     state: Arc<CoordinatorState>,
@@ -74,9 +85,7 @@ async fn test_worker_registration() {
     let coordinator = TestCoordinator::start().await;
 
     let coord_addr = Address::tcp(coordinator.addr());
-    let mut client = CoordinatorClient::connect(&coord_addr)
-        .await
-        .expect("Failed to connect to coordinator");
+    let mut client = connect_to_coordinator(&coord_addr).await;
 
     assert!(!client.is_registered());
 
@@ -103,9 +112,7 @@ async fn test_worker_heartbeat() {
     let coordinator = TestCoordinator::start().await;
 
     let coord_addr = Address::tcp(coordinator.addr());
-    let mut client = CoordinatorClient::connect(&coord_addr)
-        .await
-        .expect("Failed to connect to coordinator");
+    let mut client = connect_to_coordinator(&coord_addr).await;
 
     let node_id = NodeId::new();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -133,9 +140,7 @@ async fn test_worker_get_assignment_none() {
     let coordinator = TestCoordinator::start().await;
 
     let coord_addr = Address::tcp(coordinator.addr());
-    let mut client = CoordinatorClient::connect(&coord_addr)
-        .await
-        .expect("Failed to connect to coordinator");
+    let mut client = connect_to_coordinator(&coord_addr).await;
 
     let node_id = NodeId::new();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -158,9 +163,7 @@ async fn test_worker_get_assignment_none() {
 async fn test_worker_get_assignment_with_pipeline() {
     let coordinator = TestCoordinator::start().await;
     let coord_addr = Address::tcp(coordinator.addr());
-    let mut client = CoordinatorClient::connect(&coord_addr)
-        .await
-        .expect("Failed to connect to coordinator");
+    let mut client = connect_to_coordinator(&coord_addr).await;
 
     let node_id = NodeId::new();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], 5000));
@@ -197,9 +200,7 @@ async fn test_worker_report_ready() {
     let coordinator = TestCoordinator::start().await;
 
     let coord_addr = Address::tcp(coordinator.addr());
-    let mut client = CoordinatorClient::connect(&coord_addr)
-        .await
-        .expect("Failed to connect to coordinator");
+    let mut client = connect_to_coordinator(&coord_addr).await;
 
     let node_id = NodeId::new();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], 5001));
@@ -230,9 +231,7 @@ async fn test_worker_deregister() {
     let coordinator = TestCoordinator::start().await;
 
     let coord_addr = Address::tcp(coordinator.addr());
-    let mut client = CoordinatorClient::connect(&coord_addr)
-        .await
-        .expect("Failed to connect to coordinator");
+    let mut client = connect_to_coordinator(&coord_addr).await;
 
     let node_id = NodeId::new();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], 0));

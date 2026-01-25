@@ -1,37 +1,41 @@
+use std::marker::PhantomData;
+
 use rig_core::{
-    Address, Assignment, Codec, CoordinatorIncoming, CoordinatorMessage, CoordinatorOutgoing,
+    Assignment, Codec, CoordinatorIncoming, CoordinatorMessage, CoordinatorOutgoing,
     FramedTransport, GenerationDecision, HeartbeatRequest, InferenceRequest, ModelInfo, NodeId,
-    NodeInfo, NodeStatus, PipelineId, RegisterRequest, RequestId, TransportFactory, UsageStats,
-    WorkerMessage,
+    NodeInfo, NodeStatus, PipelineId, RegisterRequest, RequestId, UsageStats, WorkerMessage,
 };
-use rig_message_bincode::BincodeCodec;
-use rig_transport_tcp::{TcpConfig, TcpTransport, TcpTransportFactory};
 
 use crate::error::WorkerError;
 
-pub struct CoordinatorClient {
-    transport: TcpTransport,
-    codec: BincodeCodec,
+pub struct CoordinatorClient<T, C> {
+    transport: T,
+    codec: C,
     node_id: Option<NodeId>,
+    _marker: PhantomData<(CoordinatorIncoming, CoordinatorOutgoing)>,
 }
 
-impl CoordinatorClient {
-    pub async fn connect(addr: &Address) -> Result<Self, WorkerError> {
-        let config = TcpConfig::default().with_read_timeout(None);
-        let factory = TcpTransportFactory::with_config(config);
-        let transport = factory.connect(addr).await?;
-
-        Ok(Self {
+impl<T, C> CoordinatorClient<T, C>
+where
+    T: FramedTransport,
+    C: Codec<CoordinatorIncoming> + Codec<CoordinatorOutgoing>,
+{
+    pub const fn new(transport: T, codec: C) -> Self {
+        Self {
             transport,
-            codec: BincodeCodec::new(),
+            codec,
             node_id: None,
-        })
+            _marker: PhantomData,
+        }
     }
 
-    pub async fn connect_for_node(addr: &Address, node_id: NodeId) -> Result<Self, WorkerError> {
-        let mut client = Self::connect(addr).await?;
-        client.node_id = Some(node_id);
-        Ok(client)
+    pub const fn with_node_id(transport: T, codec: C, node_id: NodeId) -> Self {
+        Self {
+            transport,
+            codec,
+            node_id: Some(node_id),
+            _marker: PhantomData,
+        }
     }
 
     #[must_use]
@@ -339,31 +343,11 @@ impl CoordinatorClient {
     }
 }
 
-impl std::fmt::Debug for CoordinatorClient {
+impl<T, C> std::fmt::Debug for CoordinatorClient<T, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoordinatorClient")
             .field("node_id", &self.node_id)
-            .field("registered", &self.is_registered())
+            .field("registered", &self.node_id.is_some())
             .finish_non_exhaustive()
-    }
-}
-
-pub async fn create_heartbeat_client(
-    addr: &Address,
-    node_id: NodeId,
-) -> Result<CoordinatorClient, WorkerError> {
-    CoordinatorClient::connect_for_node(addr, node_id).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn connect_fails_on_invalid_address() {
-        let addr = Address::tcp(std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
-        let result = CoordinatorClient::connect(&addr).await;
-
-        assert!(result.is_err());
     }
 }
